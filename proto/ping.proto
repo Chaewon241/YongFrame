@@ -1,0 +1,12 @@
+syntax = "proto3";
+package game.protocol;
+
+message PingRequest {
+  uint64 request_id = 1;
+  bytes payload = 2;
+}
+
+message PingResponse {
+  uint64 request_id = 1;
+  bytes payload = 2;
+}
