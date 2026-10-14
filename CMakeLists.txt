@@ -19,6 +19,7 @@ protobuf_generate(
 
 # 툴체인 확인용. 서버 구현이 시작되면 제거한다.
 add_executable(hello_asio src/hello_asio.cpp)
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT hello_asio)
 target_link_libraries(hello_asio PRIVATE Boost::headers game_proto)
 if(WIN32)
   target_compile_definitions(hello_asio PRIVATE _WIN32_WINNT=0x0A00)  # Windows 10
