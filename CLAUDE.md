@@ -80,6 +80,22 @@ cmake --build --preset local-debug    # 또는 local-release
 build/windows-local/Debug/hello_asio.exe
 ```
 
+### 테스트 (GoogleTest, Windows 확인됨)
+
+```bash
+cmake --build --preset local-debug
+build/windows-local/Debug/frame_codec_test.exe
+```
+
+`ctest --test-dir build/windows-local -C Debug`로도 실행된다 (gtest_discover_tests로 케이스별 등록).
+
+### 코드 구조
+
+- `src/protocol/frame.h/.cpp`: 프레임 인코더와 `FrameDecoder` (소켓과 무관한 바이트 처리, `frame_codec` 라이브러리)
+- `src/protocol/message_ids.h`: 메시지 ID 대응표 (한곳에서 관리)
+- `tests/frame_codec_test.cpp`: 코덱 단위 테스트
+- `proto/ping.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
+
 ### Linux (VM에서 확인 예정)
 
 `linux-debug`, `linux-release` 프리셋(Ninja)이 정의돼 있으나 아직 실행해 보지 않았다. 확인하면 이 절을 갱신한다.
