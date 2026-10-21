@@ -4,7 +4,8 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 ## 현재 상태
 
-- 현재 단계는 **1단계(패킷 송수신)**. 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다. 서버 구현은 아직 없다.
+- 현재 단계는 **1단계(패킷 송수신)**. 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
+- 구현됨: 프레임 코덱(단위 테스트 20개), Ping 서버(`game_server`). 남음: C++ 테스트 클라이언트, 서버 통합 테스트(자동화), 1단계 결과 문서화, Linux 빌드 확인.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -89,12 +90,32 @@ build/windows-local/Debug/frame_codec_test.exe
 
 `ctest --test-dir build/windows-local -C Debug`로도 실행된다 (gtest_discover_tests로 케이스별 등록).
 
+### 서버 실행 (Windows, 확인됨)
+
+```bash
+build/windows-local/Debug/game_server.exe --port 7777
+```
+
+옵션: `--bind`(기본 127.0.0.1, VM/외부 접속은 0.0.0.0), `--port`, `--log-level`(기본 debug, 부하 실험은 info 이상), `--stats-interval`(초, 기본 10), `--max-send-queue-bytes`(기본 4 MiB), `--help`. 종료는 Ctrl+C(열린 연결을 모두 닫고 최종 통계를 출력).
+
 ### 코드 구조
 
 - `src/protocol/frame.h/.cpp`: 프레임 인코더와 `FrameDecoder` (소켓과 무관한 바이트 처리, `frame_codec` 라이브러리)
 - `src/protocol/message_ids.h`: 메시지 ID 대응표 (한곳에서 관리)
+- `src/server/session.h/.cpp`: 연결 1개 담당. 읽기 → 디코더 → Ping 처리 → 송신 큐 → 쓰기, 종료 처리 (`server_core` 라이브러리)
+- `src/server/server.h/.cpp`: 리스닝 소켓, accept 반복, 세션 목록, 종료, 주기 통계 출력
+- `src/server/stats.h`: 서버 전체 카운터(연결 수, 프레임 수, 오류 이유별 횟수, 최대 송신 큐)
+- `src/server/log.h`: 레벨별 스레드 안전 로그
+- `src/server/main.cpp`: 실행 인자 파싱, `io_context` 실행, 종료 신호 처리 (`game_server`)
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
 - `proto/ping.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
+
+### 서버 구현에서 정해 둔 것
+
+- `io_context`는 스레드 1개로 돌린다. Session/Server는 스레드 안전하지 않고 단일 스레드 전제다. 스레드를 늘리는 실험(3단계)을 할 때는 소켓에 strand를 붙여 이 전제를 유지해야 한다.
+- 소켓은 `TCP_NODELAY`를 켠다(즉시 송신). 배치 송신은 3단계 비교 후보다.
+- 연결이 닫혀도 `Session::send_queue_`는 비우지 않는다. 진행 중인 `async_write`가 맨 앞 버퍼를 쓰는 동안 해제하면 안 되기 때문이다(IOCP는 취소 완료 전까지 버퍼를 쓸 수 있다).
+- 윈도우에서는 `SO_REUSEADDR`를 켜지 않는다(중복 바인드 허용 의미라 위험). 리눅스에서만 켠다.
 
 ### Linux (VM에서 확인 예정)
 
@@ -102,4 +123,4 @@ build/windows-local/Debug/frame_codec_test.exe
 
 ### 추가 예정
 
-서버 실행, 테스트 클라이언트 실행, 기능 테스트, 부하 클라이언트 실행 명령은 구현 후 채운다.
+테스트 클라이언트 실행, 서버 통합 테스트, 부하 클라이언트 실행 명령은 구현 후 채운다.

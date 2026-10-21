@@ -10,6 +10,7 @@ enable_testing()
 find_package(Boost CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 include(GoogleTest)
 
 # 모든 타깃에 공통으로 적용하는 컴파일 옵션.
@@ -42,6 +43,21 @@ add_executable(frame_codec_test tests/frame_codec_test.cpp)
 target_link_libraries(frame_codec_test PRIVATE frame_codec GTest::gtest_main)
 apply_project_options(frame_codec_test)
 gtest_discover_tests(frame_codec_test)
+
+# 서버 핵심 로직: 연결 하나를 다루는 Session과 연결을 받는 Server. 실행 파일과 분리해 두어
+# 나중에 통합 테스트가 같은 코드를 그대로 링크할 수 있다.
+add_library(server_core STATIC src/server/session.cpp src/server/server.cpp)
+target_include_directories(server_core PUBLIC src)
+target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto Threads::Threads)
+if(WIN32)
+  target_link_libraries(server_core PUBLIC ws2_32 mswsock)  # Winsock
+endif()
+apply_project_options(server_core)
+
+# 서버 실행 파일: 인자 파싱과 io_context 실행만 담당한다.
+add_executable(game_server src/server/main.cpp)
+target_link_libraries(game_server PRIVATE server_core)
+apply_project_options(game_server)
 
 # 툴체인 확인용. 서버 구현이 시작되면 제거한다.
 add_executable(hello_asio src/hello_asio.cpp)

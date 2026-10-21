@@ -10,6 +10,9 @@ enum class MessageId : std::uint16_t {
   kPingResponse = 2,
 };
 
+// enum class는 정수로 자동 변환되지 않으므로, 프레임의 message_id(uint16_t)와 비교할 때 쓴다.
+inline constexpr std::uint16_t ToUint16(MessageId id) { return static_cast<std::uint16_t>(id); }
+
 inline constexpr bool IsKnownMessageId(std::uint16_t id) {
   switch (static_cast<MessageId>(id)) {
     case MessageId::kPingRequest:
