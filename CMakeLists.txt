@@ -44,11 +44,17 @@ target_link_libraries(frame_codec_test PRIVATE frame_codec GTest::gtest_main)
 apply_project_options(frame_codec_test)
 gtest_discover_tests(frame_codec_test)
 
+# 공용 도우미: 윈도우의 ANSI 오류 메시지를 UTF-8로 바꾼다. 서버와 클라이언트가 함께 쓴다.
+add_library(common_util STATIC src/common/error_text.cpp)
+target_include_directories(common_util PUBLIC src)
+target_link_libraries(common_util PUBLIC Boost::headers)
+apply_project_options(common_util)
+
 # 서버 핵심 로직: 연결 하나를 다루는 Session과 연결을 받는 Server. 실행 파일과 분리해 두어
 # 나중에 통합 테스트가 같은 코드를 그대로 링크할 수 있다.
 add_library(server_core STATIC src/server/session.cpp src/server/server.cpp)
 target_include_directories(server_core PUBLIC src)
-target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto Threads::Threads)
+target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto common_util Threads::Threads)
 if(WIN32)
   target_link_libraries(server_core PUBLIC ws2_32 mswsock)  # Winsock
 endif()
@@ -58,6 +64,26 @@ apply_project_options(server_core)
 add_executable(game_server src/server/main.cpp)
 target_link_libraries(game_server PRIVATE server_core)
 apply_project_options(game_server)
+
+# 동기식 클라이언트: 테스트와 수동 실험용. 모든 대기에 타임아웃이 있다.
+add_library(client_core STATIC src/client/blocking_client.cpp)
+target_include_directories(client_core PUBLIC src)
+target_link_libraries(client_core PUBLIC Boost::headers frame_codec game_proto common_util Threads::Threads)
+if(WIN32)
+  target_link_libraries(client_core PUBLIC ws2_32 mswsock)  # Winsock
+endif()
+apply_project_options(client_core)
+
+# 수동 확인용: 서버에 Ping을 보내고 응답이 같은지 검사한다. (부하 생성기가 아니다)
+add_executable(ping_client src/client/ping_client.cpp)
+target_link_libraries(ping_client PRIVATE client_core)
+apply_project_options(ping_client)
+
+# 서버 통합 테스트: 테스트 프로세스 안에서 진짜 서버를 띄워 실제 TCP로 시나리오를 검증한다.
+add_executable(server_integration_test tests/server_integration_test.cpp)
+target_link_libraries(server_integration_test PRIVATE server_core client_core GTest::gtest_main)
+apply_project_options(server_integration_test)
+gtest_discover_tests(server_integration_test)
 
 # 툴체인 확인용. 서버 구현이 시작되면 제거한다.
 add_executable(hello_asio src/hello_asio.cpp)

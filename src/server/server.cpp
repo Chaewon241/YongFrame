@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/error_text.h"
 #include "server/log.h"
 
 namespace game::server {
@@ -67,7 +68,7 @@ void Server::OnAccept(const boost::system::error_code& ec, boost::asio::ip::tcp:
     if (stopped_ || ec == boost::asio::error::operation_aborted) {
       return;  // Stop()이 acceptor를 닫아서 취소된 것. 정상 종료 경로이다.
     }
-    Log(LogLevel::kError, "[서버] accept 실패 코드=", ec.value(), " ", ec.message());
+    Log(LogLevel::kError, "[서버] accept 실패 코드=", ec.value(), " ", common::ErrorText(ec));
     ScheduleAcceptRetry();
     return;
   }

@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "common/error_text.h"
 #include "ping.pb.h"  // proto/ping.proto에서 빌드 때 생성되는 PingRequest / PingResponse
 #include "protocol/message_ids.h"
 #include "server/log.h"
@@ -66,9 +67,10 @@ std::string DescribeDecodeError(protocol::DecodeError error) {
   return "알 수 없는 디코드 오류";
 }
 
-// 소켓 오류를 "코드=값 메시지" 형태로 만든다. 윈도우는 메시지가 시스템 언어로 나오므로 코드도 함께 남긴다.
+// 소켓 오류를 "코드=값 메시지" 형태로 만든다. 윈도우 메시지는 ANSI 코드페이지라 UTF-8로 바꿔 쓰고,
+// 메시지가 환경마다 달라지므로 코드 값도 함께 남긴다.
 std::string DescribeError(const boost::system::error_code& ec) {
-  return "코드=" + std::to_string(ec.value()) + " " + ec.message();
+  return "코드=" + std::to_string(ec.value()) + " " + common::ErrorText(ec);
 }
 
 }  // namespace

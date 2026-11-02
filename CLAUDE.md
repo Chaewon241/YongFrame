@@ -5,7 +5,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 ## 현재 상태
 
 - 현재 단계는 **1단계(패킷 송수신)**. 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
-- 구현됨: 프레임 코덱(단위 테스트 20개), Ping 서버(`game_server`). 남음: C++ 테스트 클라이언트, 서버 통합 테스트(자동화), 1단계 결과 문서화, Linux 빌드 확인.
+- 구현됨: 프레임 코덱(단위 테스트 20개), Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 서버 통합 테스트 32개. 남음: 1단계 결과 문서화, Linux 빌드 확인.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -85,10 +85,20 @@ build/windows-local/Debug/hello_asio.exe
 
 ```bash
 cmake --build --preset local-debug
-build/windows-local/Debug/frame_codec_test.exe
+build/windows-local/Debug/frame_codec_test.exe          # 코덱 단위 테스트 20개
+build/windows-local/Debug/server_integration_test.exe   # 서버 통합 테스트 32개 (약 2초)
 ```
 
-`ctest --test-dir build/windows-local -C Debug`로도 실행된다 (gtest_discover_tests로 케이스별 등록).
+`ctest --test-dir build/windows-local -C Debug`로도 모두 실행된다 (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
+
+### 수동 확인 (서버 + ping_client)
+
+```bash
+build/windows-local/Debug/game_server.exe --port 7777                         # 터미널 1
+build/windows-local/Debug/ping_client.exe --port 7777 --count 5 --payload-size 32   # 터미널 2
+```
+
+`ping_client` 옵션: `--host`, `--port`, `--count`, `--payload-size`(최대 65000), `--timeout-ms`. 종료 코드 0=전부 성공, 1=실패, 2=인자 오류. 요청 하나씩 왕복하는 단순 도구이며 부하 생성기가 아니다(부하 클라이언트는 3단계).
 
 ### 서버 실행 (Windows, 확인됨)
 
@@ -107,7 +117,11 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/server/stats.h`: 서버 전체 카운터(연결 수, 프레임 수, 오류 이유별 횟수, 최대 송신 큐)
 - `src/server/log.h`: 레벨별 스레드 안전 로그
 - `src/server/main.cpp`: 실행 인자 파싱, `io_context` 실행, 종료 신호 처리 (`game_server`)
+- `src/client/blocking_client.h/.cpp`: 모든 대기에 타임아웃이 있는 동기식 클라이언트 (`client_core`). 테스트와 `ping_client`가 공유
+- `src/client/ping_client.cpp`: 수동 확인용 실행 파일
+- `src/common/error_text.h/.cpp`: 윈도우 ANSI 오류 메시지를 UTF-8로 변환 (`common_util`). 오류 메시지를 로그/출력에 넣을 때는 `ec.message()` 대신 `common::ErrorText(ec)`를 쓴다
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
+- `tests/server_integration_test.cpp`: 서버 통합 테스트. 결과는 서버 `Stats` 카운터와 클라이언트가 받은 응답으로 확인
 - `proto/ping.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
 
 ### 서버 구현에서 정해 둔 것
@@ -123,4 +137,4 @@ build/windows-local/Debug/game_server.exe --port 7777
 
 ### 추가 예정
 
-테스트 클라이언트 실행, 서버 통합 테스트, 부하 클라이언트 실행 명령은 구현 후 채운다.
+부하 클라이언트 실행 명령은 3단계에서 구현한 뒤 채운다.

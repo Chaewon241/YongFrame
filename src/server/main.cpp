@@ -22,6 +22,7 @@
 
 #include <boost/asio.hpp>
 
+#include "common/error_text.h"
 #include "server/log.h"
 #include "server/server.h"
 
@@ -153,7 +154,7 @@ int main(int argc, char** argv) {
     game::server::Log(game::server::LogLevel::kInfo, "[서버] 종료 완료");
   } catch (const std::exception& e) {
     // 주로 시작 단계의 실패 (포트 사용 중, 잘못된 주소 등)
-    game::server::Log(game::server::LogLevel::kError, "[서버] 시작 실패: ", e.what());
+    game::server::Log(game::server::LogLevel::kError, "[서버] 시작 실패: ", game::common::SystemMessageToUtf8(e.what()));
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;
