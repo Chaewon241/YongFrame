@@ -4,7 +4,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 ## 현재 상태
 
-- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. 다음은 2단계 계획 재검토. 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
+- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL) 진행 중**: 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
 - 구현됨: 프레임 코덱(단위 테스트 20개), Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 서버 통합 테스트 32개. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
@@ -17,6 +17,8 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/protocol.md](docs/protocol.md) | 1단계 TCP 프레임 형식, Protobuf 메시지, 오류 처리 계약 |
 | [docs/validation.md](docs/validation.md) | 기능 검증, 수용 인원 정의, 측정 절차, 실험 기록 템플릿 |
 | [docs/stage1.md](docs/stage1.md) | 1단계 구성, 실행 방법, 검증 결과, 겪은 문제, 알려진 제한 |
+| [docs/protocol-chat.md](docs/protocol-chat.md) | 2단계 채팅 메시지, 입력 규칙, 상태 규칙, 저장 정책 (초안) |
+| [docs/stage2.md](docs/stage2.md) | 2단계 결정 기록, 작업 순서와 진행 상태, MySQL 준비 방법 |
 | [README.md](README.md) | 진입점. 위 문서 링크와 바로 시작할 작업 |
 
 `project.md`는 CLAUDE.md와 역할이 다르다(사람이 읽는 로드맵이며 README가 링크한다). 이름을 바꾸거나 합치지 않는다. 계획·계약이 바뀌면 CLAUDE.md가 아니라 해당 문서를 고치고, 여기에는 요약만 둔다.
@@ -25,7 +27,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 - C++20, CMake, Windows와 Linux 모두 빌드 (OS별 소켓 코드 분기 없이 Boost.Asio 사용)
 - Boost.Asio TCP + `io_context`, Protocol Buffers (`proto3`)
-- MySQL은 **2단계부터**. 1단계에 DB를 넣지 않는다.
+- MySQL은 2단계부터. 드라이버는 **Boost.MySQL**(`boost-mysql`, Asio 비동기)로 시작하고 Windows 빌드는 확인됨. 접속은 MySQL 서버 설치 후 확인. 결정 근거는 docs/stage2.md. DB 호출은 `io_context`를 막지 않아야 하며, 채팅 로직은 `ChatRepository` 인터페이스에만 의존시킨다.
 - 의존성 버전과 설치 방식은 첫 구현 때 정해 고정한다. 임의로 올리지 않는다.
 - 문서의 `Boost.io`는 **Boost.Asio**를 뜻한다.
 
@@ -62,6 +64,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 - 실험마다 `results/YYYY-MM-DD-주제.md`와 원본 결과 파일을 남긴다. 템플릿은 validation.md 5절. 합격 기준은 **측정 전에** 쓴다.
 - Windows와 Linux 결과는 따로 내고 합치지 않는다. 오류가 난 반복도 숨기지 않는다.
 - 각 단계가 끝나면 실행 방법, 검증 결과, 알려진 제한을 문서로 남긴다.
+- 문서(md)에는 날짜를 쓰지 않는다. 이력은 git 커밋으로 남긴다.
 
 ## 명령
 
@@ -101,6 +104,15 @@ build/windows-local/Debug/ping_client.exe --port 7777 --count 5 --payload-size 3
 
 `ping_client` 옵션: `--host`, `--port`, `--count`, `--payload-size`(최대 65000), `--timeout-ms`. 종료 코드 0=전부 성공, 1=실패, 2=인자 오류. 요청 하나씩 왕복하는 단순 도구이며 부하 생성기가 아니다(부하 클라이언트는 3단계).
 
+### MySQL 연결 확인 (빌드는 Windows 확인됨, 접속은 서버 설치 후)
+
+```bash
+$env:GAME_DB_PASSWORD = '비밀번호'
+build/windows-local/Debug/mysql_check.exe --user game --db game_chat
+```
+
+옵션: `--host`, `--port`, `--user`, `--db`. MySQL 서버가 없으면 "연결을 거부"로 실패(종료 코드 1)하는 것이 정상이다. 서버 설치와 계정 만들기는 docs/stage2.md. 이 PC에는 MySQL과 Docker가 설치돼 있지 않았다.
+
 ### 서버 실행 (Windows, 확인됨)
 
 ```bash
@@ -120,6 +132,7 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/server/main.cpp`: 실행 인자 파싱, `io_context` 실행, 종료 신호 처리 (`game_server`)
 - `src/client/blocking_client.h/.cpp`: 모든 대기에 타임아웃이 있는 동기식 클라이언트 (`client_core`). 테스트와 `ping_client`가 공유
 - `src/client/ping_client.cpp`: 수동 확인용 실행 파일
+- `src/tools/mysql_check.cpp`: MySQL 접속·문자 집합 진단 도구 (`mysql_check`). 비밀번호는 환경변수 `GAME_DB_PASSWORD`로만 받는다
 - `src/common/error_text.h/.cpp`: 윈도우 ANSI 오류 메시지를 UTF-8로 변환 (`common_util`). 오류 메시지를 로그/출력에 넣을 때는 `ec.message()` 대신 `common::ErrorText(ec)`를 쓴다
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
 - `tests/server_integration_test.cpp`: 서버 통합 테스트. 결과는 서버 `Stats` 카운터와 클라이언트가 받은 응답으로 확인

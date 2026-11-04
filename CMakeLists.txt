@@ -11,6 +11,8 @@ find_package(Boost CONFIG REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+find_package(boost_mysql CONFIG REQUIRED)  # 2단계: Asio 기반 MySQL 클라이언트 (Boost.MySQL)
+find_package(OpenSSL REQUIRED)             # Boost.MySQL이 인증/TLS에 사용
 include(GoogleTest)
 
 # 모든 타깃에 공통으로 적용하는 컴파일 옵션.
@@ -84,6 +86,14 @@ add_executable(server_integration_test tests/server_integration_test.cpp)
 target_link_libraries(server_integration_test PRIVATE server_core client_core GTest::gtest_main)
 apply_project_options(server_integration_test)
 gtest_discover_tests(server_integration_test)
+
+# MySQL 연결 확인 도구: 서버 설치와 계정 설정이 맞는지, 드라이버가 두 환경에서 빌드되는지 본다.
+add_executable(mysql_check src/tools/mysql_check.cpp)
+target_link_libraries(mysql_check PRIVATE Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
+if(WIN32)
+  target_link_libraries(mysql_check PRIVATE ws2_32 mswsock)
+endif()
+apply_project_options(mysql_check)
 
 # 툴체인 확인용. 서버 구현이 시작되면 제거한다.
 add_executable(hello_asio src/hello_asio.cpp)
