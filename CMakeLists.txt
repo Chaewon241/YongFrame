@@ -28,7 +28,7 @@ function(apply_project_options target)
 endfunction()
 
 # proto/*.proto -> 빌드 디렉터리의 생성 코드. 서버와 테스트 클라이언트가 같은 라이브러리를 쓴다.
-add_library(game_proto STATIC proto/ping.proto)
+add_library(game_proto STATIC proto/ping.proto proto/chat.proto)
 target_link_libraries(game_proto PUBLIC protobuf::libprotobuf)
 target_include_directories(game_proto PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
 protobuf_generate(
@@ -52,11 +52,33 @@ target_include_directories(common_util PUBLIC src)
 target_link_libraries(common_util PUBLIC Boost::headers)
 apply_project_options(common_util)
 
+# 채팅 로직: 입력 규칙, 저장소 인터페이스와 메모리 구현, 채팅 방. 소켓을 모르므로 가짜 연결로 단위 테스트할 수 있다.
+add_library(chat_core STATIC
+  src/chat/chat_rules.cpp
+  src/chat/chat_room.cpp
+  src/chat/in_memory_chat_repository.cpp)
+target_include_directories(chat_core PUBLIC src)
+target_link_libraries(chat_core PUBLIC Boost::headers frame_codec game_proto Threads::Threads)
+if(WIN32)
+  target_link_libraries(chat_core PUBLIC ws2_32 mswsock)  # asio가 Winsock을 초기화한다
+endif()
+apply_project_options(chat_core)
+
+add_executable(chat_rules_test tests/chat_rules_test.cpp)
+target_link_libraries(chat_rules_test PRIVATE chat_core GTest::gtest_main)
+apply_project_options(chat_rules_test)
+gtest_discover_tests(chat_rules_test)
+
+add_executable(chat_room_test tests/chat_room_test.cpp)
+target_link_libraries(chat_room_test PRIVATE chat_core GTest::gtest_main)
+apply_project_options(chat_room_test)
+gtest_discover_tests(chat_room_test)
+
 # 서버 핵심 로직: 연결 하나를 다루는 Session과 연결을 받는 Server. 실행 파일과 분리해 두어
 # 나중에 통합 테스트가 같은 코드를 그대로 링크할 수 있다.
 add_library(server_core STATIC src/server/session.cpp src/server/server.cpp)
 target_include_directories(server_core PUBLIC src)
-target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto common_util Threads::Threads)
+target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto chat_core common_util Threads::Threads)
 if(WIN32)
   target_link_libraries(server_core PUBLIC ws2_32 mswsock)  # Winsock
 endif()
@@ -81,11 +103,22 @@ add_executable(ping_client src/client/ping_client.cpp)
 target_link_libraries(ping_client PRIVATE client_core)
 apply_project_options(ping_client)
 
+# 대화형 채팅 클라이언트: 터미널 여러 개에서 실행해 입장/대화/기록 조회를 직접 실험하는 용도.
+add_executable(chat_client src/client/chat_client.cpp)
+target_link_libraries(chat_client PRIVATE client_core)
+apply_project_options(chat_client)
+
 # 서버 통합 테스트: 테스트 프로세스 안에서 진짜 서버를 띄워 실제 TCP로 시나리오를 검증한다.
 add_executable(server_integration_test tests/server_integration_test.cpp)
 target_link_libraries(server_integration_test PRIVATE server_core client_core GTest::gtest_main)
 apply_project_options(server_integration_test)
 gtest_discover_tests(server_integration_test)
+
+# 채팅 통합 테스트: 입장/대화/기록/저장소 장애/느린 수신자를 실제 TCP로 검증한다.
+add_executable(chat_integration_test tests/chat_integration_test.cpp)
+target_link_libraries(chat_integration_test PRIVATE server_core client_core GTest::gtest_main)
+apply_project_options(chat_integration_test)
+gtest_discover_tests(chat_integration_test)
 
 # MySQL 연결 확인 도구: 서버 설치와 계정 설정이 맞는지, 드라이버가 두 환경에서 빌드되는지 본다.
 add_executable(mysql_check src/tools/mysql_check.cpp)

@@ -1,0 +1,46 @@
+// 2단계 채팅 메시지. 규칙과 처리 순서는 docs/protocol-chat.md가 기준이다.
+syntax = "proto3";
+package game.protocol;
+
+// 업무 규칙 위반과 저장 실패를 알리는 결과 코드. 프로토콜 위반(잘못된 길이, 알 수 없는 ID,
+// 파싱 실패)은 이 코드를 쓰지 않고 연결을 종료한다.
+enum ResultCode {
+  RESULT_OK = 0;
+  RESULT_INVALID_NICKNAME = 1;   // 닉네임 규칙 위반
+  RESULT_NICKNAME_TAKEN = 2;     // 방에 같은 닉네임이 이미 있음
+  RESULT_ALREADY_JOINED = 3;     // 이미 입장한 연결이 Join
+  RESULT_NOT_JOINED = 4;         // 입장하지 않은 연결이 Leave/Chat/History
+  RESULT_EMPTY_MESSAGE = 5;      // 메시지가 비었거나 공백뿐
+  RESULT_MESSAGE_TOO_LONG = 6;   // 메시지가 1,000바이트 초과
+  RESULT_INVALID_ARGUMENT = 7;   // 제어 문자 포함, limit 범위 초과 등
+  RESULT_STORAGE_FAILURE = 8;    // 저장/조회 실패 또는 시간 초과
+  RESULT_SERVER_BUSY = 9;        // 방의 저장 대기열이 가득 참
+}
+
+message JoinRequest   { string nickname = 1; }
+message JoinResponse  { ResultCode result = 1; repeated string members = 2; }  // 성공 시 현재 접속자(자신 포함)
+message LeaveRequest  {}
+message LeaveResponse { ResultCode result = 1; }
+
+message ChatEntry {
+  uint64 message_id = 1;       // 저장소가 부여한 번호. 방에서 항상 증가한다.
+  string nickname = 2;
+  string text = 3;
+  int64 sent_at_unix_ms = 4;   // 저장된 시각 (UTC, 밀리초)
+}
+
+message ChatRequest   { string text = 1; }
+message ChatResponse  { ResultCode result = 1; uint64 message_id = 2; }  // message_id는 성공 시에만 의미 있음
+message ChatBroadcast { ChatEntry entry = 1; }
+
+message HistoryRequest  { uint32 limit = 1; }                                       // 0이면 기본값, 최대 50
+message HistoryResponse { ResultCode result = 1; repeated ChatEntry entries = 2; }  // 오래된 것부터
+
+message PresenceNotice {
+  enum Kind {
+    KIND_JOINED = 0;
+    KIND_LEFT = 1;
+  }
+  Kind kind = 1;
+  string nickname = 2;
+}

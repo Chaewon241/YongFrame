@@ -4,8 +4,8 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 ## 현재 상태
 
-- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL) 진행 중**: 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
-- 구현됨: 프레임 코덱(단위 테스트 20개), Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 서버 통합 테스트 32개. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
+- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL) 진행 중**: 2-2(DB 없는 인메모리 채팅)까지 완료, 다음은 2-3(MySQL 연결). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
+- 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 108개 통과. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -27,7 +27,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 - C++20, CMake, Windows와 Linux 모두 빌드 (OS별 소켓 코드 분기 없이 Boost.Asio 사용)
 - Boost.Asio TCP + `io_context`, Protocol Buffers (`proto3`)
-- MySQL은 2단계부터. 드라이버는 **Boost.MySQL**(`boost-mysql`, Asio 비동기)로 시작하고 Windows 빌드는 확인됨. 접속은 MySQL 서버 설치 후 확인. 결정 근거는 docs/stage2.md. DB 호출은 `io_context`를 막지 않아야 하며, 채팅 로직은 `ChatRepository` 인터페이스에만 의존시킨다.
+- MySQL은 2단계부터. 드라이버는 **Boost.MySQL**(`boost-mysql`, Asio 비동기)로 시작하고 Windows 빌드는 확인됨. 접속은 MySQL 서버 설치 후 확인. 결정 근거는 docs/stage2.md. DB 호출은 `io_context`를 막지 않아야 하며, 채팅 로직(`ChatRoom`)은 `ChatRepository` 인터페이스에만 의존한다(2-3에서 MySQL 구현만 추가). MySQL 계정의 인증 플러그인은 `caching_sha2_password`여야 한다(Boost.MySQL이 `sha256_password`를 지원하지 않음).
 - 의존성 버전과 설치 방식은 첫 구현 때 정해 고정한다. 임의로 올리지 않는다.
 - 문서의 `Boost.io`는 **Boost.Asio**를 뜻한다.
 
@@ -53,7 +53,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 ## 로드맵 요약
 
 1. 패킷 송수신 (Ping 왕복, 프레이밍, 오류 처리) ← Windows 기준 완료, Linux 확인 보류
-2. 채팅 + MySQL (방 단위 전파, 기록 저장·조회, DB 장애 시 동작)
+2. 채팅 + MySQL (방 단위 전파, 기록 저장·조회, DB 장애 시 동작) ← 진행 중 (2-2 완료)
 3. 수용 규모와 병목 검증 (Idle/Active 워크로드 구분, p50/p95/p99, Windows·Linux 각각 측정)
 4. 2인 게임 (서버가 상태와 판정을 소유. 우선 후보는 술래잡기/점령. 3~4인 확장은 이후 결정)
 
@@ -90,10 +90,13 @@ build/windows-local/Debug/hello_asio.exe
 ```bash
 cmake --build --preset local-debug
 build/windows-local/Debug/frame_codec_test.exe          # 코덱 단위 테스트 20개
-build/windows-local/Debug/server_integration_test.exe   # 서버 통합 테스트 32개 (약 2초)
+build/windows-local/Debug/server_integration_test.exe   # 서버(Ping) 통합 테스트 32개 (약 2초)
+build/windows-local/Debug/chat_rules_test.exe           # 채팅 입력 규칙 13개
+build/windows-local/Debug/chat_room_test.exe            # 채팅 방 로직 23개 (소켓 없이 가짜 연결 사용)
+build/windows-local/Debug/chat_integration_test.exe     # 채팅 통합 20개 (실제 TCP)
 ```
 
-`ctest --test-dir build/windows-local -C Debug`로도 모두 실행된다 (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
+`ctest --test-dir build/windows-local -C Debug`로 전체 108개가 한 번에 실행된다 (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
 
 ### 수동 확인 (서버 + ping_client)
 
@@ -113,6 +116,16 @@ build/windows-local/Debug/mysql_check.exe --user game --db game_chat
 
 옵션: `--host`, `--port`, `--user`, `--db`. MySQL 서버가 없으면 "연결을 거부"로 실패(종료 코드 1)하는 것이 정상이다. 서버 설치와 계정 만들기는 docs/stage2.md. 이 PC에는 MySQL과 Docker가 설치돼 있지 않았다.
 
+### 대화형 채팅 체험 (chat_client)
+
+```bash
+build/windows-local/Debug/game_server.exe --port 7777                         # 터미널 1
+build/windows-local/Debug/chat_client.exe --port 7777 --nick alice            # 터미널 2
+build/windows-local/Debug/chat_client.exe --port 7777 --nick bob              # 터미널 3
+```
+
+한 줄을 입력하면 채팅 메시지로 전송된다. 명령: `/join <닉네임>`, `/leave`, `/history [개수]`, `/ping`, `/wait <밀리초>`(스크립트용), `/quit`, `/help`. 같은 닉네임으로 입장하거나 입장 전에 채팅하면 거부 메시지가 나오는 것도 확인할 수 있다. `--nick`을 주면 접속 직후 자동 입장한다.
+
 ### 서버 실행 (Windows, 확인됨)
 
 ```bash
@@ -125,18 +138,24 @@ build/windows-local/Debug/game_server.exe --port 7777
 
 - `src/protocol/frame.h/.cpp`: 프레임 인코더와 `FrameDecoder` (소켓과 무관한 바이트 처리, `frame_codec` 라이브러리)
 - `src/protocol/message_ids.h`: 메시지 ID 대응표 (한곳에서 관리)
-- `src/server/session.h/.cpp`: 연결 1개 담당. 읽기 → 디코더 → Ping 처리 → 송신 큐 → 쓰기, 종료 처리 (`server_core` 라이브러리)
+- `src/server/session.h/.cpp`: 연결 1개 담당. 읽기 → 디코더 → Ping 처리 또는 채팅 요청 파싱 후 `ChatRoom`에 위임 → 송신 큐 → 쓰기, 종료 처리 (`server_core` 라이브러리). `chat::ChatClient`를 구현해 방이 이 연결에 메시지를 보낼 수 있게 한다
+- `src/chat/chat_rules.h/.cpp`: 닉네임/메시지 검증 규칙 (순수 함수, `chat_core` 라이브러리)
+- `src/chat/chat_repository.h`: 저장소 인터페이스(비동기, 핸들러는 항상 `io_context` 스레드에서 호출). `in_memory_chat_repository.*`는 메모리 구현이며 테스트용 장애·지연 주입을 지원
+- `src/chat/chat_room.h/.cpp`: 채팅 방. 접속자, 입장/퇴장, 방 단위 직렬 저장 대기열, 저장 제한 시간, 전파, 기록 조회. 소켓·Session을 모르고 `ChatClient`/`ChatRepository` 인터페이스만 안다
+- `src/chat/chat_client.h`: 방이 보는 연결 인터페이스
 - `src/server/server.h/.cpp`: 리스닝 소켓, accept 반복, 세션 목록, 종료, 주기 통계 출력
 - `src/server/stats.h`: 서버 전체 카운터(연결 수, 프레임 수, 오류 이유별 횟수, 최대 송신 큐)
 - `src/server/log.h`: 레벨별 스레드 안전 로그
 - `src/server/main.cpp`: 실행 인자 파싱, `io_context` 실행, 종료 신호 처리 (`game_server`)
 - `src/client/blocking_client.h/.cpp`: 모든 대기에 타임아웃이 있는 동기식 클라이언트 (`client_core`). 테스트와 `ping_client`가 공유
 - `src/client/ping_client.cpp`: 수동 확인용 실행 파일
+- `src/client/chat_client.cpp`: 대화형 채팅 클라이언트(입력 스레드 + `io_context`)
 - `src/tools/mysql_check.cpp`: MySQL 접속·문자 집합 진단 도구 (`mysql_check`). 비밀번호는 환경변수 `GAME_DB_PASSWORD`로만 받는다
 - `src/common/error_text.h/.cpp`: 윈도우 ANSI 오류 메시지를 UTF-8로 변환 (`common_util`). 오류 메시지를 로그/출력에 넣을 때는 `ec.message()` 대신 `common::ErrorText(ec)`를 쓴다
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
-- `tests/server_integration_test.cpp`: 서버 통합 테스트. 결과는 서버 `Stats` 카운터와 클라이언트가 받은 응답으로 확인
-- `proto/ping.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
+- `tests/server_integration_test.cpp`: 서버(Ping) 통합 테스트. 결과는 서버 `Stats` 카운터와 클라이언트가 받은 응답으로 확인
+- `tests/chat_rules_test.cpp`, `chat_room_test.cpp`, `chat_integration_test.cpp`: 채팅 규칙/방 로직/통합 테스트. `tests/test_support.h`에 서버를 띄우는 `TestServer`(저장소 장애·지연 주입 가능)와 `WaitUntil`이 있다
+- `proto/ping.proto`, `proto/chat.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
 
 ### 서버 구현에서 정해 둔 것
 

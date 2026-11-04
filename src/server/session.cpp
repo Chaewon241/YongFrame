@@ -76,11 +76,12 @@ std::string DescribeError(const boost::system::error_code& ec) {
 }  // namespace
 
 Session::Session(boost::asio::ip::tcp::socket socket, std::uint64_t id, Stats& stats,
-                 const SessionOptions& options, CloseCallback on_close)
+                 const SessionOptions& options, chat::ChatRoom& room, CloseCallback on_close)
     : socket_(std::move(socket)),
       id_(id),
       stats_(stats),
       options_(options),
+      room_(room),
       on_close_(std::move(on_close)) {}
 
 // 연결이 시작될 때 한 번 호출된다. 상대 주소를 기록하고, 소켓 옵션을 설정하고, 통계를 올린 뒤
@@ -172,22 +173,106 @@ void Session::ProcessFrames() {
   }
 }
 
-// 프레임의 메시지 ID를 보고 처리 함수로 보낸다. 1단계에서 서버가 받는 요청은 PingRequest뿐이다.
-// 알 수 없는 ID뿐 아니라 PingResponse(서버가 보내는 쪽 메시지)가 들어와도 규약 위반으로 본다.
+// 프레임의 메시지 ID를 보고 처리 함수로 보낸다. 서버가 요청으로 받는 ID는 Ping, 입장, 퇴장, 채팅,
+// 기록 조회 다섯 가지뿐이다. 알 수 없는 ID뿐 아니라 서버가 보내는 쪽 메시지(PingResponse,
+// ChatBroadcast 등)가 들어와도 규약 위반으로 보고 연결을 닫는다.
 void Session::HandleFrame(const protocol::Frame& frame) {
-  if (frame.message_id == protocol::ToUint16(protocol::MessageId::kPingRequest)) {
-    HandlePing(frame);
+  if (!protocol::IsClientRequestId(frame.message_id)) {
+    Close(CloseReason::kUnknownMessageId, "message_id=" + std::to_string(frame.message_id));
     return;
   }
-  Close(CloseReason::kUnknownMessageId, "message_id=" + std::to_string(frame.message_id));
+  if (frame.message_id == protocol::ToUint16(protocol::MessageId::kPingRequest)) {
+    HandlePing(frame);
+  } else {
+    HandleChatFrame(frame);
+  }
+}
+
+// 입장/퇴장/채팅/기록 요청을 파싱해 채팅 방에 넘긴다. 파싱에 실패하면 프로토콜 위반이라 연결을 닫는다.
+// (닉네임이 잘못된 UTF-8인 경우도 proto3 string 파싱이 실패하므로 여기서 걸린다)
+// 입력 규칙 위반이나 상태 위반은 연결을 닫지 않고, 방이 오류 코드가 담긴 응답을 돌려준다.
+void Session::HandleChatFrame(const protocol::Frame& frame) {
+  // 방은 이 세션을 약한 참조로만 들고 있으므로, 호출하는 동안 살아 있는 강한 참조를 넘긴다.
+  const std::shared_ptr<chat::ChatClient> self = shared_from_this();
+
+  switch (static_cast<protocol::MessageId>(frame.message_id)) {
+    case protocol::MessageId::kJoinRequest: {
+      game::protocol::JoinRequest request;
+      if (ParsePayload(frame, request, "JoinRequest")) {
+        Log(LogLevel::kDebug, "[입장요청] id=", id_, " 닉네임 ", request.nickname().size(), "B");
+        room_.HandleJoin(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kLeaveRequest: {
+      game::protocol::LeaveRequest request;
+      if (ParsePayload(frame, request, "LeaveRequest")) {
+        Log(LogLevel::kDebug, "[퇴장요청] id=", id_);
+        room_.HandleLeave(self);
+      }
+      return;
+    }
+    case protocol::MessageId::kChatRequest: {
+      game::protocol::ChatRequest request;
+      if (ParsePayload(frame, request, "ChatRequest")) {
+        // 채팅 본문은 기본 로그에 남기지 않고 크기만 남긴다.
+        Log(LogLevel::kDebug, "[채팅요청] id=", id_, " 본문 ", request.text().size(), "B");
+        room_.HandleChat(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kHistoryRequest: {
+      game::protocol::HistoryRequest request;
+      if (ParsePayload(frame, request, "HistoryRequest")) {
+        Log(LogLevel::kDebug, "[기록요청] id=", id_, " limit=", request.limit());
+        room_.HandleHistory(self, request);
+      }
+      return;
+    }
+    default:
+      break;  // IsClientRequestId가 걸러 주므로 여기 오지 않는다.
+  }
+  Close(CloseReason::kInternalError, "처리되지 않는 요청 ID " + std::to_string(frame.message_id));
+}
+
+// 프레임 본문(payload)을 message로 파싱한다. 실패하면 연결을 닫고 false.
+bool Session::ParsePayload(const protocol::Frame& frame, google::protobuf::MessageLite& message,
+                           const char* name) {
+  if (message.ParseFromArray(frame.payload.data(), static_cast<int>(frame.payload.size()))) {
+    return true;
+  }
+  Close(CloseReason::kParseError,
+        std::string(name) + " 파싱 실패 (payload " + std::to_string(frame.payload.size()) + "바이트)");
+  return false;
+}
+
+// message를 [길이][ID][본문] 프레임으로 만들어 송신 큐에 넣는다.
+void Session::SendMessage(protocol::MessageId id, const google::protobuf::MessageLite& message) {
+  if (closed_) {
+    return;
+  }
+  std::vector<std::uint8_t> body(message.ByteSizeLong());
+  message.SerializeToArray(body.data(), static_cast<int>(body.size()));
+
+  auto wire = protocol::EncodeFrame(protocol::ToUint16(id), body);
+  if (!wire) {
+    // 서버가 만든 메시지가 최대 크기를 넘었다. 서버 버그이므로 이 연결을 닫는다.
+    Close(CloseReason::kInternalError, "전송할 프레임이 최대 크기를 초과 (message_id=" +
+                                           std::to_string(protocol::ToUint16(id)) + ")");
+    return;
+  }
+  Send(std::move(*wire));
+}
+
+// ChatClient 인터페이스 구현. 채팅 방이 이 연결에 메시지를 보낸다.
+void Session::Deliver(protocol::MessageId id, const google::protobuf::MessageLite& message) {
+  SendMessage(id, message);
 }
 
 // PingRequest를 처리한다. 받은 request_id와 payload를 그대로 PingResponse에 담아 되돌려준다.
 void Session::HandlePing(const protocol::Frame& frame) {
   game::protocol::PingRequest request;
-  if (!request.ParseFromArray(frame.payload.data(), static_cast<int>(frame.payload.size()))) {
-    Close(CloseReason::kParseError,
-          "PingRequest 파싱 실패 (payload " + std::to_string(frame.payload.size()) + "바이트)");
+  if (!ParsePayload(frame, request, "PingRequest")) {
     return;
   }
 
@@ -195,21 +280,11 @@ void Session::HandlePing(const protocol::Frame& frame) {
   response.set_request_id(request.request_id());
   response.set_payload(request.payload());
 
-  std::vector<std::uint8_t> body(response.ByteSizeLong());
-  response.SerializeToArray(body.data(), static_cast<int>(body.size()));
-
-  // 응답 본문에 길이 필드와 메시지 ID를 붙여 완성된 프레임으로 만든다.
-  auto wire = protocol::EncodeFrame(protocol::ToUint16(protocol::MessageId::kPingResponse), body);
-  if (!wire) {
-    // 응답은 요청과 같은 크기라 최대 크기를 넘을 수 없다. 여기 온다면 서버 버그다.
-    Close(CloseReason::kInternalError, "응답 프레임이 최대 크기를 초과");
-    return;
-  }
-
   // 본문(payload)은 기본 로그에 남기지 않고, 요청 ID와 크기만 남긴다. (project.md 1단계 4번)
   Log(LogLevel::kDebug, "[요청] id=", id_, " request_id=", request.request_id(),
       " payload=", request.payload().size(), "B -> 응답 큐 등록");
-  Send(std::move(*wire));
+  // 응답을 직렬화해 길이 필드와 메시지 ID를 붙이고 송신 큐에 넣는다.
+  SendMessage(protocol::MessageId::kPingResponse, response);
 }
 
 // 완성된 프레임을 송신 큐에 넣는다. 이미 쓰기가 진행 중이면 큐에 쌓아 두기만 하고,
@@ -288,6 +363,9 @@ void Session::Close(CloseReason reason, std::string_view detail) {
     return;
   }
   closed_ = true;
+
+  // 입장해 있었다면 방에서 빼고 남은 사람에게 알린다. (입장하지 않았다면 방이 아무것도 하지 않는다)
+  room_.OnDisconnect(id_);
 
   CountClose(stats_, reason);
   const std::uint64_t remaining = --stats_.current_connections;

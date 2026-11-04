@@ -150,7 +150,7 @@ int main(int argc, char** argv) {
     // 현재는 스레드 1개로 돌린다. 스레드 수 비교는 3단계에서 한 번에 한 변수씩 실험한다.
     io.run();
 
-    game::server::Log(game::server::LogLevel::kInfo, "[통계] 최종 ", server.stats().Summary());
+    game::server::Log(game::server::LogLevel::kInfo, "[통계] 최종 ", server.FullSummary());
     game::server::Log(game::server::LogLevel::kInfo, "[서버] 종료 완료");
   } catch (const std::exception& e) {
     // 주로 시작 단계의 실패 (포트 사용 중, 잘못된 주소 등)

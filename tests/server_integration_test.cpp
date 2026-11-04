@@ -26,8 +26,8 @@
 #include "client/blocking_client.h"
 #include "protocol/frame.h"
 #include "protocol/message_ids.h"
-#include "server/log.h"
 #include "server/server.h"
+#include "test_support.h"
 
 namespace game {
 namespace {
@@ -39,80 +39,14 @@ using Status = BlockingClient::ReceiveStatus;
 
 constexpr Millis kTimeout{3000};
 
-// 의도적으로 오류를 만드는 테스트가 많아 서버 경고 로그가 쏟아진다. 테스트 출력이 묻히지 않도록
-// 오류 레벨 이상만 출력한다. (통계 카운터로 검증하므로 로그가 없어도 확인에 지장이 없다)
-class QuietLogEnvironment : public ::testing::Environment {
- public:
-  void SetUp() override { server::SetMinLogLevel(server::LogLevel::kError); }
-};
+// 서버를 띄우는 TestServer, 조건 대기 WaitUntil 등은 tests/test_support.h에 있다.
+using testing_support::DefaultServerConfig;
+using testing_support::Load;
+using testing_support::TestServer;
+using testing_support::WaitUntil;
+
 [[maybe_unused]] ::testing::Environment* const kQuietLog =
-    ::testing::AddGlobalTestEnvironment(new QuietLogEnvironment);
-
-// 테스트 한 개가 쓰는 서버. 만들면 서버가 시작되고, 소멸하면 정상 종료한다.
-class TestServer {
- public:
-  explicit TestServer(server::ServerConfig config = DefaultConfig())
-      : server_(io_, std::move(config)) {
-    server_.Start();
-    finished_ = finished_promise_.get_future();
-    thread_ = std::thread([this] {
-      io_.run();
-      finished_promise_.set_value();
-    });
-  }
-
-  ~TestServer() { Stop(); }
-
-  // Server::Stop은 io_context 스레드에서 불러야 하므로 post로 넘기고, 스레드가 끝나기를 기다린다.
-  // 서버가 제한 시간 안에 끝나지 않으면(예: 연결을 닫지 않는 버그) 테스트가 영원히 멈추지 않도록
-  // io_context를 강제로 멈추고 테스트를 실패시킨다.
-  void Stop() {
-    if (!thread_.joinable()) {
-      return;
-    }
-    boost::asio::post(io_, [this] { server_.Stop(); });
-    if (finished_.wait_for(kStopTimeout) != std::future_status::ready) {
-      ADD_FAILURE() << "서버가 " << kStopTimeout.count() << "ms 안에 종료되지 않음 (강제 중단)";
-      io_.stop();
-    }
-    thread_.join();
-  }
-
-  std::uint16_t port() const { return server_.port(); }
-  const server::Stats& stats() const { return server_.stats(); }
-
-  static server::ServerConfig DefaultConfig() {
-    server::ServerConfig config;
-    config.bind_address = "127.0.0.1";
-    config.port = 0;  // 빈 포트를 OS가 고른다. 테스트끼리 포트가 겹치지 않는다.
-    config.stats_interval_seconds = 0;
-    return config;
-  }
-
- private:
-  static constexpr Millis kStopTimeout{5000};
-
-  boost::asio::io_context io_;
-  server::Server server_;
-  std::thread thread_;
-  std::promise<void> finished_promise_;  // io_context 스레드가 끝났음을 알린다.
-  std::future<void> finished_;
-};
-
-// 조건이 참이 될 때까지 제한 시간 동안 기다린다.
-template <typename Predicate>
-bool WaitUntil(Predicate predicate, Millis timeout = kTimeout) {
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (!predicate()) {
-    if (std::chrono::steady_clock::now() > deadline) {
-      return false;
-    }
-    std::this_thread::sleep_for(Millis(5));
-  }
-  return true;
-}
-
-std::uint64_t Load(const server::Stats::Counter& counter) { return counter.load(); }
+    ::testing::AddGlobalTestEnvironment(new testing_support::QuietLogEnvironment);
 
 // 서버에 연결하는 클라이언트를 만든다. 연결에 실패하면 테스트를 즉시 실패시킨다.
 std::unique_ptr<BlockingClient> Connect(const TestServer& server) {
@@ -435,7 +369,7 @@ TEST(ServerIntegration, BadConnectionDoesNotAffectGoodConnection) {
 // ============================================================ 느린 수신자
 
 TEST(ServerIntegration, ClientThatNeverReadsIsDisconnectedWhenSendQueueOverflows) {
-  server::ServerConfig config = TestServer::DefaultConfig();
+  server::ServerConfig config = DefaultServerConfig();
   config.session.max_pending_send_bytes = 200000;  // 테스트가 빨리 끝나도록 작은 한도
   TestServer server(config);
 
