@@ -4,8 +4,8 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 ## 현재 상태
 
-- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL) 진행 중**: 2-2(DB 없는 인메모리 채팅)까지 완료, 다음은 2-3(MySQL 연결). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
-- 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 108개 통과. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
+- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준 측정을 마쳤고 다음은 부하 생성기 강화(docs/stage3.md). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
+- 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -19,6 +19,8 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/stage1.md](docs/stage1.md) | 1단계 구성, 실행 방법, 검증 결과, 겪은 문제, 알려진 제한 |
 | [docs/protocol-chat.md](docs/protocol-chat.md) | 2단계 채팅 메시지, 입력 규칙, 상태 규칙, 저장 정책 (초안) |
 | [docs/stage2.md](docs/stage2.md) | 2단계 결정 기록, 작업 순서와 진행 상태, MySQL 준비 방법 |
+| [docs/stage3.md](docs/stage3.md) | 3단계 측정 계획과 합격 기준(측정 전 확정), 진행 상태, 측정 도구에서 겪은 문제 |
+| [docs/game-plan.md](docs/game-plan.md) | 4단계 게임 기획 초안(1~4인 협동 농장, Unreal 클라이언트), 서버 영향, 미정 사항 |
 | [README.md](README.md) | 진입점. 위 문서 링크와 바로 시작할 작업 |
 
 `project.md`는 CLAUDE.md와 역할이 다르다(사람이 읽는 로드맵이며 README가 링크한다). 이름을 바꾸거나 합치지 않는다. 계획·계약이 바뀌면 CLAUDE.md가 아니라 해당 문서를 고치고, 여기에는 요약만 둔다.
@@ -27,7 +29,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 - C++20, CMake, Windows와 Linux 모두 빌드 (OS별 소켓 코드 분기 없이 Boost.Asio 사용)
 - Boost.Asio TCP + `io_context`, Protocol Buffers (`proto3`)
-- MySQL은 2단계부터. 드라이버는 **Boost.MySQL**(`boost-mysql`, Asio 비동기)로 시작하고 Windows 빌드는 확인됨. 접속은 MySQL 서버 설치 후 확인. 결정 근거는 docs/stage2.md. DB 호출은 `io_context`를 막지 않아야 하며, 채팅 로직(`ChatRoom`)은 `ChatRepository` 인터페이스에만 의존한다(2-3에서 MySQL 구현만 추가). MySQL 계정의 인증 플러그인은 `caching_sha2_password`여야 한다(Boost.MySQL이 `sha256_password`를 지원하지 않음).
+- MySQL은 2단계부터. 드라이버는 **Boost.MySQL**(`boost-mysql`, Asio 비동기)로 시작하고 Windows 빌드와 실제 접속(MySQL 26.10.0)을 확인했다. 결정 근거는 docs/stage2.md. DB 호출은 `io_context`를 막지 않아야 하며, 채팅 로직(`ChatRoom`)은 `ChatRepository` 인터페이스에만 의존한다(2-3에서 MySQL 구현만 추가). MySQL 계정의 인증 플러그인은 `caching_sha2_password`여야 한다(Boost.MySQL이 `sha256_password`를 지원하지 않음). "알 수 없는 인증 플러그인" 오류는 계정이 아예 없을 때도 나온다(MySQL이 없는 계정에 가짜 플러그인을 알려 줌). `mysql.user`를 조회해 계정 유무부터 확인한다.
 - 의존성 버전과 설치 방식은 첫 구현 때 정해 고정한다. 임의로 올리지 않는다.
 - 문서의 `Boost.io`는 **Boost.Asio**를 뜻한다.
 
@@ -53,9 +55,9 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 ## 로드맵 요약
 
 1. 패킷 송수신 (Ping 왕복, 프레이밍, 오류 처리) ← Windows 기준 완료, Linux 확인 보류
-2. 채팅 + MySQL (방 단위 전파, 기록 저장·조회, DB 장애 시 동작) ← 진행 중 (2-2 완료)
-3. 수용 규모와 병목 검증 (Idle/Active 워크로드 구분, p50/p95/p99, Windows·Linux 각각 측정)
-4. 2인 게임 (서버가 상태와 판정을 소유. 우선 후보는 술래잡기/점령. 3~4인 확장은 이후 결정)
+2. 채팅 + MySQL (방 단위 전파, 기록 저장·조회, DB 장애 시 동작) ← Windows 기준 완료
+3. 수용 규모와 병목 검증 (Idle/Active 워크로드 구분, p50/p95/p99, Windows·Linux 각각 측정) ← 진행 중 (기준 측정 완료)
+4. 게임 (서버가 상태와 판정을 소유. 사용자가 정한 기획은 1~4인 협동 농장 게임, 방 코드 입장, Unreal 클라이언트: docs/game-plan.md)
 
 ## 검증·기록 규칙
 
@@ -96,7 +98,7 @@ build/windows-local/Debug/chat_room_test.exe            # 채팅 방 로직 23�
 build/windows-local/Debug/chat_integration_test.exe     # 채팅 통합 20개 (실제 TCP)
 ```
 
-`ctest --test-dir build/windows-local -C Debug`로 전체 108개가 한 번에 실행된다 (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
+`ctest --test-dir build/windows-local -C Debug`로 전체 121개가 한 번에 실행된다(MySQL 대상 11개는 비밀번호가 없으면 건너뜀) (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
 
 ### 수동 확인 (서버 + ping_client)
 
@@ -107,14 +109,26 @@ build/windows-local/Debug/ping_client.exe --port 7777 --count 5 --payload-size 3
 
 `ping_client` 옵션: `--host`, `--port`, `--count`, `--payload-size`(최대 65000), `--timeout-ms`. 종료 코드 0=전부 성공, 1=실패, 2=인자 오류. 요청 하나씩 왕복하는 단순 도구이며 부하 생성기가 아니다(부하 클라이언트는 3단계).
 
-### MySQL 연결 확인 (빌드는 Windows 확인됨, 접속은 서버 설치 후)
+### MySQL 연결 확인 (Windows 확인됨)
 
 ```bash
 $env:GAME_DB_PASSWORD = '비밀번호'
 build/windows-local/Debug/mysql_check.exe --user game --db game_chat
 ```
 
-옵션: `--host`, `--port`, `--user`, `--db`. MySQL 서버가 없으면 "연결을 거부"로 실패(종료 코드 1)하는 것이 정상이다. 서버 설치와 계정 만들기는 docs/stage2.md. 이 PC에는 MySQL과 Docker가 설치돼 있지 않았다.
+옵션: `--host`, `--port`, `--user`, `--db`. MySQL 서버가 없으면 "연결을 거부"로 실패(종료 코드 1)하는 것이 정상이다. 서버 설치와 계정 만들기는 docs/stage2.md. 이 PC에는 MySQL 26.10.0이 설치되어 있다(Docker는 없음).
+
+### MySQL 저장소 (Windows 확인됨)
+
+비밀번호는 명령줄로 받지 않는다. 환경변수 `GAME_DB_PASSWORD` 또는 `GAME_DB_PASSWORD_FILE`(비밀번호가 든 파일의 경로)로만 전달하고, 로그에 출력하지 않는다. 비밀번호 파일은 저장소 밖에 둔다.
+
+```bash
+build/windows-local/Debug/db_migrate.exe                                  # 프로젝트 폴더에서: db/migrations 적용
+build/windows-local/Debug/game_server.exe --port 7777 --storage mysql     # 기록을 MySQL에 저장
+build/windows-local/Debug/chat_mysql_test.exe                             # MySQL 대상 테스트 (비밀번호 없으면 건너뜀)
+```
+
+접속 정보 기본값은 127.0.0.1:3306, 계정 `game`, 데이터베이스 `game_chat`이며 서버는 `--db-host/--db-port/--db-user/--db-name`, 테스트는 `GAME_DB_HOST/PORT/USER/NAME`으로 바꾼다. 테스트는 `chat_messages_test` 테이블만 쓴다.
 
 ### 대화형 채팅 체험 (chat_client)
 
@@ -125,6 +139,15 @@ build/windows-local/Debug/chat_client.exe --port 7777 --nick bob              # 
 ```
 
 한 줄을 입력하면 채팅 메시지로 전송된다. 명령: `/join <닉네임>`, `/leave`, `/history [개수]`, `/ping`, `/wait <밀리초>`(스크립트용), `/quit`, `/help`. 같은 닉네임으로 입장하거나 입장 전에 채팅하면 거부 메시지가 나오는 것도 확인할 수 있다. `--nick`을 주면 접속 직후 자동 입장한다.
+
+### 부하 측정 (3단계, Windows)
+
+```bash
+build/windows-local/Release/game_server.exe --port 7777 --log-level info --stats-interval 0   # 터미널 1 (Release)
+build/windows-local/Release/load_client.exe --port 7777 --connections 1000 --mode active --server-pid <서버PID> --label 이름 --csv results/stage3/raw/파일.csv   # 터미널 2
+```
+
+옵션: `--mode idle|active`, `--rate`(연결당 초당 건수), `--payload`, `--warmup`, `--duration`, `--server-pid`(서버 CPU/메모리 측정), `--csv`. 종료 코드 0=합격, 1=불합격, 3=생성기 포화로 판정 불가. 합격 기준과 절차는 docs/stage3.md, 결과는 results/stage3/. 측정할 때는 **Release 빌드**로, 다른 무거운 작업을 하지 않는 상태에서 한다. 서버는 `--tcp-nodelay on|off`도 받는다.
 
 ### 서버 실행 (Windows, 확인됨)
 
@@ -141,6 +164,9 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/server/session.h/.cpp`: 연결 1개 담당. 읽기 → 디코더 → Ping 처리 또는 채팅 요청 파싱 후 `ChatRoom`에 위임 → 송신 큐 → 쓰기, 종료 처리 (`server_core` 라이브러리). `chat::ChatClient`를 구현해 방이 이 연결에 메시지를 보낼 수 있게 한다
 - `src/chat/chat_rules.h/.cpp`: 닉네임/메시지 검증 규칙 (순수 함수, `chat_core` 라이브러리)
 - `src/chat/chat_repository.h`: 저장소 인터페이스(비동기, 핸들러는 항상 `io_context` 스레드에서 호출). `in_memory_chat_repository.*`는 메모리 구현이며 테스트용 장애·지연 주입을 지원
+- `src/chat/mysql_chat_repository.h/.cpp`: MySQL 저장소(`chat_mysql` 라이브러리). 연결 1개 + 작업 큐 직렬화, 모든 DB 호출에 제한 시간, 오류 시 연결 폐기 후 재연결, 쓰기는 재시도 없음, 준비된 문장 바인딩
+- `db/migrations/*.sql`: 번호 순서의 스키마 파일. 적용한 파일은 고치지 않고 새 번호를 추가한다. `src/tools/db_migrate.cpp`가 적용
+- `src/common/db_credentials.h/.cpp`: DB 비밀번호 읽기
 - `src/chat/chat_room.h/.cpp`: 채팅 방. 접속자, 입장/퇴장, 방 단위 직렬 저장 대기열, 저장 제한 시간, 전파, 기록 조회. 소켓·Session을 모르고 `ChatClient`/`ChatRepository` 인터페이스만 안다
 - `src/chat/chat_client.h`: 방이 보는 연결 인터페이스
 - `src/server/server.h/.cpp`: 리스닝 소켓, accept 반복, 세션 목록, 종료, 주기 통계 출력
@@ -150,11 +176,12 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/client/blocking_client.h/.cpp`: 모든 대기에 타임아웃이 있는 동기식 클라이언트 (`client_core`). 테스트와 `ping_client`가 공유
 - `src/client/ping_client.cpp`: 수동 확인용 실행 파일
 - `src/client/chat_client.cpp`: 대화형 채팅 클라이언트(입력 스레드 + `io_context`)
+- `src/tools/load_client.cpp`: 3단계 부하 생성기(스레드 1개, 열린 루프, 요청별 응답 대조, 서버 프로세스 CPU/메모리 샘플링, 생성기 포화 감지, 합격 판정)
 - `src/tools/mysql_check.cpp`: MySQL 접속·문자 집합 진단 도구 (`mysql_check`). 비밀번호는 환경변수 `GAME_DB_PASSWORD`로만 받는다
 - `src/common/error_text.h/.cpp`: 윈도우 ANSI 오류 메시지를 UTF-8로 변환 (`common_util`). 오류 메시지를 로그/출력에 넣을 때는 `ec.message()` 대신 `common::ErrorText(ec)`를 쓴다
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
 - `tests/server_integration_test.cpp`: 서버(Ping) 통합 테스트. 결과는 서버 `Stats` 카운터와 클라이언트가 받은 응답으로 확인
-- `tests/chat_rules_test.cpp`, `chat_room_test.cpp`, `chat_integration_test.cpp`: 채팅 규칙/방 로직/통합 테스트. `tests/test_support.h`에 서버를 띄우는 `TestServer`(저장소 장애·지연 주입 가능)와 `WaitUntil`이 있다
+- `tests/chat_rules_test.cpp`, `chat_room_test.cpp`, `chat_integration_test.cpp`: 채팅 규칙/방 로직/통합 테스트. `tests/test_support.h`에 서버를 띄우는 `TestServer`(저장소 장애·지연 주입 가능, 다른 저장소도 주입 가능)와 `WaitUntil`이, `tests/chat_test_client.h`에 클라이언트 쪽 도우미(`Connect`, `JoinOk`, `SendChat` 등)가 있다. `tests/chat_mysql_test.cpp`는 MySQL 대상 테스트
 - `proto/ping.proto`, `proto/chat.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
 
 ### 서버 구현에서 정해 둔 것

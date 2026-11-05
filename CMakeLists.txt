@@ -47,7 +47,7 @@ apply_project_options(frame_codec_test)
 gtest_discover_tests(frame_codec_test)
 
 # 공용 도우미: 윈도우의 ANSI 오류 메시지를 UTF-8로 바꾼다. 서버와 클라이언트가 함께 쓴다.
-add_library(common_util STATIC src/common/error_text.cpp)
+add_library(common_util STATIC src/common/error_text.cpp src/common/db_credentials.cpp)
 target_include_directories(common_util PUBLIC src)
 target_link_libraries(common_util PUBLIC Boost::headers)
 apply_project_options(common_util)
@@ -74,6 +74,15 @@ target_link_libraries(chat_room_test PRIVATE chat_core GTest::gtest_main)
 apply_project_options(chat_room_test)
 gtest_discover_tests(chat_room_test)
 
+# MySQL 저장소: Boost.MySQL(비동기, 코루틴)로 ChatRepository를 구현한다. OpenSSL 의존성을 이 라이브러리에 가둔다.
+add_library(chat_mysql STATIC src/chat/mysql_chat_repository.cpp)
+target_include_directories(chat_mysql PUBLIC src)
+target_link_libraries(chat_mysql PUBLIC chat_core Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
+if(WIN32)
+  target_link_libraries(chat_mysql PUBLIC ws2_32 mswsock)
+endif()
+apply_project_options(chat_mysql)
+
 # 서버 핵심 로직: 연결 하나를 다루는 Session과 연결을 받는 Server. 실행 파일과 분리해 두어
 # 나중에 통합 테스트가 같은 코드를 그대로 링크할 수 있다.
 add_library(server_core STATIC src/server/session.cpp src/server/server.cpp)
@@ -86,7 +95,7 @@ apply_project_options(server_core)
 
 # 서버 실행 파일: 인자 파싱과 io_context 실행만 담당한다.
 add_executable(game_server src/server/main.cpp)
-target_link_libraries(game_server PRIVATE server_core)
+target_link_libraries(game_server PRIVATE server_core chat_mysql)
 apply_project_options(game_server)
 
 # 동기식 클라이언트: 테스트와 수동 실험용. 모든 대기에 타임아웃이 있다.
@@ -120,6 +129,14 @@ target_link_libraries(chat_integration_test PRIVATE server_core client_core GTes
 apply_project_options(chat_integration_test)
 gtest_discover_tests(chat_integration_test)
 
+# 부하 생성기(3단계): 많은 연결로 Ping을 보내 지연, 처리량, 오류, 서버 CPU/메모리를 잰다.
+add_executable(load_client src/tools/load_client.cpp)
+target_link_libraries(load_client PRIVATE client_core)
+if(WIN32)
+  target_link_libraries(load_client PRIVATE psapi winmm)  # psapi: 서버 프로세스의 메모리 조회, winmm: 타이머 해상도
+endif()
+apply_project_options(load_client)
+
 # MySQL 연결 확인 도구: 서버 설치와 계정 설정이 맞는지, 드라이버가 두 환경에서 빌드되는지 본다.
 add_executable(mysql_check src/tools/mysql_check.cpp)
 target_link_libraries(mysql_check PRIVATE Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
@@ -127,6 +144,20 @@ if(WIN32)
   target_link_libraries(mysql_check PRIVATE ws2_32 mswsock)
 endif()
 apply_project_options(mysql_check)
+
+# DB 마이그레이션 도구: db/migrations의 SQL을 번호 순서대로 적용하고 기록한다.
+add_executable(db_migrate src/tools/db_migrate.cpp)
+target_link_libraries(db_migrate PRIVATE Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
+if(WIN32)
+  target_link_libraries(db_migrate PRIVATE ws2_32 mswsock)
+endif()
+apply_project_options(db_migrate)
+
+# MySQL 통합 테스트: 비밀번호(GAME_DB_PASSWORD 또는 GAME_DB_PASSWORD_FILE)가 없으면 건너뛴다.
+add_executable(chat_mysql_test tests/chat_mysql_test.cpp)
+target_link_libraries(chat_mysql_test PRIVATE chat_mysql server_core client_core GTest::gtest_main)
+apply_project_options(chat_mysql_test)
+gtest_discover_tests(chat_mysql_test)
 
 # 툴체인 확인용. 서버 구현이 시작되면 제거한다.
 add_executable(hello_asio src/hello_asio.cpp)

@@ -49,7 +49,8 @@ Server::Server(boost::asio::io_context& io, ServerConfig config,
 
 void Server::Start() {
   Log(LogLevel::kInfo, "[서버] 시작 주소=", config_.bind_address, " 포트=", port_,
-      " 송신큐한도=", config_.session.max_pending_send_bytes, "B");
+      " 송신큐한도=", config_.session.max_pending_send_bytes, "B",
+      " nodelay=", config_.session.tcp_nodelay ? "on" : "off");
   DoAccept();
   if (config_.stats_interval_seconds > 0) {
     ScheduleStatsReport();

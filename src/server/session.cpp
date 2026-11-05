@@ -96,7 +96,7 @@ void Session::Start() {
   // TCP_NODELAY: 작은 패킷(Ping 응답)을 모아 보내려고 기다리는 Nagle 알고리즘을 끈다.
   // 켜 두면 응답 지연이 수십 ms 늘어 왕복 지연 측정이 왜곡된다. 모아 보내기는 3단계에서
   // "즉시 송신 vs 제한된 배치 송신"으로 따로 비교할 후보이므로 지금은 즉시 송신으로 둔다.
-  socket_.set_option(boost::asio::ip::tcp::no_delay(true), ec);
+  socket_.set_option(boost::asio::ip::tcp::no_delay(options_.tcp_nodelay), ec);
 
   ++stats_.total_accepted;
   const std::uint64_t current = ++stats_.current_connections;

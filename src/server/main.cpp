@@ -22,6 +22,8 @@
 
 #include <boost/asio.hpp>
 
+#include "chat/mysql_chat_repository.h"
+#include "common/db_credentials.h"
 #include "common/error_text.h"
 #include "server/log.h"
 #include "server/server.h"
@@ -37,6 +39,13 @@ void PrintUsage(const char* program) {
             << "                              부하 실험에서는 info 이상으로 올려 요청 로그를 끈다)\n"
             << "  --stats-interval <초>       통계 출력 주기 (기본 10, 0이면 끔)\n"
             << "  --max-send-queue-bytes <N>  연결당 송신 큐 한도 바이트 (기본 4194304)\n"
+            << "  --tcp-nodelay <on|off>      TCP_NODELAY (기본 on: 작은 패킷도 바로 보냄)\n"
+            << "  --storage <memory|mysql>    채팅 기록 저장소 (기본 memory: 서버를 끄면 사라짐)\n"
+            << "  --db-host <주소>            MySQL 주소 (기본 127.0.0.1)\n"
+            << "  --db-port <번호>            MySQL 포트 (기본 3306)\n"
+            << "  --db-user <이름>            MySQL 계정 (기본 game)\n"
+            << "  --db-name <이름>            MySQL 데이터베이스 (기본 game_chat)\n"
+            << "                              비밀번호는 환경변수 GAME_DB_PASSWORD 또는 GAME_DB_PASSWORD_FILE\n"
             << "  --help                      이 도움말\n";
 }
 
@@ -61,8 +70,14 @@ bool ParseUnsigned(std::string_view text, unsigned long long max_value, unsigned
 
 enum class ParseResult { kRun, kExitOk, kExitError };
 
+// 채팅 기록을 어디에 저장할지. mysql이면 db 옵션을 쓰고, 비밀번호는 환경변수/파일에서 읽는다.
+struct StorageOptions {
+  bool use_mysql = false;
+  game::chat::MySqlOptions mysql;
+};
+
 // 실행 인자를 읽어 config를 채운다. 잘못된 인자가 있으면 이유를 출력하고 kExitError.
-ParseResult ParseArgs(int argc, char** argv, game::server::ServerConfig& config) {
+ParseResult ParseArgs(int argc, char** argv, game::server::ServerConfig& config, StorageOptions& storage) {
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i];
 
@@ -106,6 +121,36 @@ ParseResult ParseArgs(int argc, char** argv, game::server::ServerConfig& config)
         return ParseResult::kExitError;
       }
       config.session.max_pending_send_bytes = static_cast<std::size_t>(number);
+    } else if (arg == "--tcp-nodelay") {
+      if (value == "on") {
+        config.session.tcp_nodelay = true;
+      } else if (value == "off") {
+        config.session.tcp_nodelay = false;
+      } else {
+        std::cerr << "--tcp-nodelay는 on 또는 off여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+    } else if (arg == "--storage") {
+      if (value == "memory") {
+        storage.use_mysql = false;
+      } else if (value == "mysql") {
+        storage.use_mysql = true;
+      } else {
+        std::cerr << "--storage는 memory 또는 mysql이어야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+    } else if (arg == "--db-host") {
+      storage.mysql.host = std::string(value);
+    } else if (arg == "--db-port") {
+      if (!ParseUnsigned(value, 65535, number) || number == 0) {
+        std::cerr << "--db-port는 1~65535 사이 숫자여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+      storage.mysql.port = static_cast<std::uint16_t>(number);
+    } else if (arg == "--db-user") {
+      storage.mysql.user = std::string(value);
+    } else if (arg == "--db-name") {
+      storage.mysql.database = std::string(value);
     } else {
       std::cerr << "알 수 없는 옵션: " << arg << "\n";
       PrintUsage(argv[0]);
@@ -124,7 +169,8 @@ int main(int argc, char** argv) {
 #endif
 
   game::server::ServerConfig config;
-  switch (ParseArgs(argc, argv, config)) {
+  StorageOptions storage;
+  switch (ParseArgs(argc, argv, config, storage)) {
     case ParseResult::kExitOk: return EXIT_SUCCESS;
     case ParseResult::kExitError: return 2;
     case ParseResult::kRun: break;
@@ -132,7 +178,27 @@ int main(int argc, char** argv) {
 
   try {
     boost::asio::io_context io;
-    game::server::Server server(io, config);  // 여기서 bind에 실패하면 예외가 난다.
+
+    // 저장소를 고른다. 넘기지 않으면(memory) Server가 메모리 저장소를 만들어 쓴다.
+    std::shared_ptr<game::chat::MySqlChatRepository> mysql;
+    if (storage.use_mysql) {
+      std::string password_source;
+      const auto password = game::common::ReadDbPassword(&password_source);
+      if (!password) {
+        std::cerr << "--storage mysql에는 DB 비밀번호가 필요합니다. 환경변수 GAME_DB_PASSWORD 또는 "
+                     "GAME_DB_PASSWORD_FILE을 설정하세요.\n";
+        return 2;
+      }
+      storage.mysql.password = *password;
+      mysql = game::chat::MySqlChatRepository::Create(io, storage.mysql);
+      game::server::Log(game::server::LogLevel::kInfo, "[서버] 저장소: MySQL ", storage.mysql.user, "@",
+                        storage.mysql.host, ":", storage.mysql.port, "/", storage.mysql.database, " (비밀번호: ",
+                        password_source, ")");
+    } else {
+      game::server::Log(game::server::LogLevel::kInfo, "[서버] 저장소: 메모리 (서버를 끄면 기록이 사라집니다)");
+    }
+
+    game::server::Server server(io, config, mysql);  // 여기서 bind에 실패하면 예외가 난다.
 
     // Ctrl+C / 종료 신호를 받으면 서버를 멈춘다. 핸들러는 io.run()을 돌리는 스레드에서 실행되므로
     // Server::Stop()을 안전하게 부를 수 있다.
@@ -145,6 +211,15 @@ int main(int argc, char** argv) {
     });
 
     server.Start();
+
+    // DB 연결 상태를 시작 로그로 알려 준다. 실패해도 서버는 계속 동작하고, DB가 나중에 올라오면
+    // 다음 요청에서 자동으로 연결한다.
+    if (mysql) {
+      mysql->CheckConnection([](bool ok, std::string detail) {
+        game::server::Log(ok ? game::server::LogLevel::kInfo : game::server::LogLevel::kError,
+                          "[DB] ", ok ? "연결 확인: " : "연결 확인 실패 (채팅은 STORAGE_FAILURE로 응답합니다): ", detail);
+      });
+    }
 
     // 처리할 비동기 작업이 남아 있는 동안 계속 돌고, Stop() 이후 모든 연결이 정리되면 반환한다.
     // 현재는 스레드 1개로 돌린다. 스레드 수 비교는 3단계에서 한 번에 한 변수씩 실험한다.

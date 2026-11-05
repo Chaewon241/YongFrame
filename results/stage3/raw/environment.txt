@@ -1,0 +1,9 @@
+﻿OS: Microsoft Windows 11 Home 10.0.26200
+CPU: AMD Ryzen 5 5600 6-Core Processor (6코어/12스레드)
+RAM: 16 GB
+컴파일러: MSVC 14.44.35207 (VS 2022), 빌드: Release
+의존성: Boost 1.92.0, Protobuf 6.33.4 (vcpkg x64-windows-static-md)
+커밋: 783b28d (작업 폴더에 커밋되지 않은 변경 있음)
+서버 설정: --log-level info --stats-interval 0, io_context 스레드 1개, TCP_NODELAY 켬, 저장소 메모리
+부하 생성기: load_client (스레드 1개), 같은 PC 루프백, payload 64B, 워밍업 5초, 측정 30초
+워크로드: active=연결당 초당 10건, idle=5초마다 1건

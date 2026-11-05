@@ -60,6 +60,10 @@ struct SessionOptions {
   // 응답을 읽지 않는 클라이언트 때문에 서버 메모리가 무한히 늘어나는 것을 막는 안전장치다.
   // (무제한 큐와 제한 큐 비교는 3단계 실험 후보이므로, 지금은 기본 안전값만 둔다)
   std::size_t max_pending_send_bytes = 4 * 1024 * 1024;
+
+  // true이면 TCP_NODELAY를 켜서 작은 패킷도 모으지 않고 바로 보낸다(기본). false이면 운영체제가 Nagle
+  // 알고리즘으로 작은 패킷을 모아 보낸다. 3단계 실험 2(즉시 송신 vs 모아 보내기)를 위한 스위치다.
+  bool tcp_nodelay = true;
 };
 
 class Session : public std::enable_shared_from_this<Session>, public chat::ChatClient {

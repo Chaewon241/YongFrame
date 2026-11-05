@@ -29,6 +29,7 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/mysql.hpp>
 
+#include "common/db_credentials.h"
 #include "common/error_text.h"
 
 namespace {
@@ -86,20 +87,6 @@ int ParseArgs(int argc, char** argv, Options& options) {
   return 0;
 }
 
-// 환경변수를 읽는다. 없으면 found=false. 윈도우의 getenv는 deprecated 경고(C4996)가 나서 Win32 API를 쓴다.
-std::string ReadEnv(const char* name, bool& found) {
-#ifdef _WIN32
-  char buffer[512];
-  const DWORD length = GetEnvironmentVariableA(name, buffer, sizeof(buffer));
-  found = length > 0 && length < sizeof(buffer);
-  return found ? std::string(buffer, length) : std::string();
-#else
-  const char* value = std::getenv(name);
-  found = value != nullptr;
-  return found ? std::string(value) : std::string();
-#endif
-}
-
 // 서버가 돌려준 진단 메시지(비어 있을 수 있음)를 사람이 읽을 문장 뒤에 붙인다.
 std::string WithServerMessage(const std::string& text, const boost::mysql::diagnostics& diag) {
   if (diag.server_message().empty()) {
@@ -120,10 +107,12 @@ int main(int argc, char** argv) {
     return parsed == 1 ? 0 : 2;
   }
 
-  bool has_password = false;
-  const std::string password = ReadEnv("GAME_DB_PASSWORD", has_password);
-  if (!has_password) {
-    std::cout << "[안내] 환경변수 GAME_DB_PASSWORD가 없어 빈 비밀번호로 접속합니다.\n";
+  std::string password_source;
+  const std::string password = game::common::ReadDbPassword(&password_source).value_or("");
+  if (password_source.empty()) {
+    std::cout << "[안내] GAME_DB_PASSWORD / GAME_DB_PASSWORD_FILE이 없어 빈 비밀번호로 접속합니다.\n";
+  } else {
+    std::cout << "[안내] 비밀번호 출처: " << password_source << "\n";
   }
 
   boost::asio::io_context ctx;
