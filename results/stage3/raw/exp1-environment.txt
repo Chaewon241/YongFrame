@@ -1,0 +1,8 @@
+﻿OS: Microsoft Windows 11 Home 10.0.26200
+CPU: AMD Ryzen 5 5600 6-Core Processor (6코어/12스레드)
+RAM: 16 GB
+컴파일러: MSVC 14.44.35207 (VS 2022), 빌드: Release
+커밋: d8485ff (작업 폴더에 커밋되지 않은 변경 있음)
+실험 1: 로그 레벨 debug vs info. 서버 stdout은 파일로 리디렉션. io_context 스레드 1개, TCP_NODELAY 켬, 저장소 메모리
+부하 생성기: load_client --threads 4, 같은 PC 루프백, active 연결당 초당 10건, payload 64B, 워밍업 5초, 측정 30초
+순서: 회차마다 두 레벨을 번갈아 실행(1,3회차는 info 먼저, 2회차는 debug 먼저)
