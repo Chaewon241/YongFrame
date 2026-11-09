@@ -1,0 +1,22 @@
+﻿1/21 scaled-active-2000-t1-r1 종료코드=0
+2/21 scaled-active-2000-t1-r2 종료코드=0
+3/21 scaled-active-2000-t1-r3 종료코드=0
+4/21 scaled-active-2000-t4-r1 종료코드=0
+5/21 scaled-active-2000-t4-r2 종료코드=0
+6/21 scaled-active-2000-t4-r3 종료코드=0
+7/21 scaled-active-3000-t4-r1 종료코드=0
+8/21 scaled-active-3000-t4-r2 종료코드=0
+9/21 scaled-active-3000-t4-r3 종료코드=0
+10/21 scaled-active-4000-t4-r1 종료코드=0
+11/21 scaled-active-4000-t4-r2 종료코드=0
+12/21 scaled-active-4000-t4-r3 종료코드=0
+13/21 scaled-active-5000-t4-r1 종료코드=1
+14/21 scaled-active-5000-t4-r2 종료코드=0
+15/21 scaled-active-5000-t4-r3 종료코드=1
+16/21 scaled-active-7500-t4-r1 종료코드=1
+17/21 scaled-active-7500-t4-r2 종료코드=1
+18/21 scaled-active-7500-t4-r3 종료코드=1
+19/21 scaled-active-10000-t4-r1 종료코드=1
+20/21 scaled-active-10000-t4-r2 종료코드=1
+21/21 scaled-active-10000-t4-r3 종료코드=1
+완료

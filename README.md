@@ -4,7 +4,7 @@ Boost.Asio 기반 C++ 게임 서버를 작은 기능부터 만들고, 각 단계
 
 > 현재 단계: **1. 패킷 송수신**. Ping 서버, 테스트 클라이언트, 자동 테스트가 구현되어 Windows에서 통과했습니다. **Windows 기준으로 1단계를 마쳤고, Linux 확인은 보류 중입니다.** 자세한 결과는 [docs/stage1.md](docs/stage1.md)입니다.
 
-> 진행 중: **2. 채팅과 MySQL**. 인메모리 채팅(입장/퇴장/전파/기록 조회)을 구현했고 DB가 필요 없는 테스트 110개가 통과합니다. MySQL 저장소(`--storage mysql`)와 마이그레이션 도구를 구현했고, 실제 MySQL 대상 테스트 13개가 통과했습니다(2단계는 Windows 기준 완료). 3단계는 기준 측정을 마쳤습니다. 자세한 내용은 [docs/stage2.md](docs/stage2.md), [docs/stage3.md](docs/stage3.md)입니다.
+> 진행 중: **2. 채팅과 MySQL**. 인메모리 채팅(입장/퇴장/전파/기록 조회)을 구현했고 DB가 필요 없는 테스트 110개가 통과합니다. MySQL 저장소(`--storage mysql`)와 마이그레이션 도구를 구현했고, 실제 MySQL 대상 테스트 13개가 통과했습니다(2단계는 Windows 기준 완료). 3단계는 기준 측정과 확장 측정을 마쳤습니다(Active 4,000연결, 초당 4만 건까지 합격 기준 통과). 자세한 내용은 [docs/stage2.md](docs/stage2.md), [docs/stage3.md](docs/stage3.md)입니다.
 
 ## 문서 안내
 
@@ -40,7 +40,7 @@ build\windows-local\Debug\chat_client.exe --port 7777 --nick bob
 
 ## 남은 작업
 
-1. 3단계: 부하 생성기를 강화해 Active 5,000연결 이상을 재고, 비교 실험(로그 레벨, Nagle, 스레드 수)을 한다([docs/stage3.md](docs/stage3.md)).
+1. 3단계: 비교 실험(로그 레벨, Nagle, 스레드 수)을 한다([docs/stage3.md](docs/stage3.md)).
 2. (보류) VM에서 Linux 빌드와 테스트를 확인하고 [docs/stage1.md](docs/stage1.md)를 갱신한다.
 
 단계의 순서와 범위는 실험 결과에 따라 바꿀 수 있습니다.

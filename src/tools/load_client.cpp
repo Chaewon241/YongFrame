@@ -15,7 +15,9 @@
 //    생성기가 한계에 닿으면 그 측정은 서버의 한계가 아니므로 합격/불합격을 판정하지 않는다.
 //  - 요청마다 request_id와 payload를 대조한다. 응답이 다르면 오류로 센다.
 //
-// 스레드 1개로 모든 연결을 비동기로 다룬다. 프로세스 CPU/메모리 측정은 윈도우에서만 지원한다.
+// 연결은 --threads 개의 작업 스레드가 나눠 맡는다. 스레드마다 자기 io_context, 연결, 통계를 가져서 잠금이
+// 필요 없고, 측정이 끝난 뒤에만 결과를 합친다. 한 스레드로는 초당 4만 건쯤에서 생성기가 먼저 포화되므로
+// (results/stage3/baseline.md) 큰 부하는 스레드를 늘려서 만든다. 프로세스 CPU/메모리 측정은 윈도우에서만 지원한다.
 //
 // 종료 코드: 0=합격, 1=불합격, 2=인자 오류/실행 실패, 3=생성기 포화로 판정 불가
 
@@ -33,6 +35,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -40,6 +43,7 @@
 #include <deque>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -47,6 +51,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <boost/asio.hpp>
@@ -74,7 +80,8 @@ struct Options {
   std::uint32_t payload = 64;           // 요청 payload 바이트
   std::uint32_t warmup_s = 5;
   std::uint32_t duration_s = 30;
-  std::uint32_t connect_batch = 200;    // 한 번에 시작하는 연결 수
+  std::uint32_t threads = 1;            // 연결을 나눠 맡는 작업 스레드 수
+  std::uint32_t connect_batch = 200;    // 한 번에 시작하는 연결 수(전체, 스레드에 나눔)
   std::uint32_t connect_gap_ms = 20;    // 연결 묶음 사이 간격
   std::uint32_t drain_ms = 3000;        // 측정이 끝난 뒤 남은 응답을 기다리는 최대 시간
   std::uint32_t server_pid = 0;         // 서버 프로세스의 CPU/메모리를 읽을 PID (0이면 생략)
@@ -104,6 +111,7 @@ void PrintUsage(const char* program) {
       << "  --server-pid <PID>   서버 프로세스의 CPU/메모리를 함께 측정 (윈도우)\n"
       << "  --label <이름>       결과에 붙일 이름\n"
       << "  --csv <파일>         결과 한 줄을 CSV 파일에 덧붙임\n"
+      << "  --threads <N>        연결을 나눠 맡는 작업 스레드 수 (기본 1)\n"
       << "  --connect-batch <N>  한 번에 시작하는 연결 수 (기본 200)\n"
       << "  --help               이 도움말\n"
       << "종료 코드: 0=합격, 1=불합격, 2=실행 실패, 3=생성기 포화로 판정 불가\n";
@@ -151,6 +159,7 @@ int ParseArgs(int argc, char** argv, Options& o) {
     else if (arg == "--warmup") { ok = ParseUint(value, 3600, n); o.warmup_s = n; }
     else if (arg == "--duration") { ok = ParseUint(value, 86400, n) && n > 0; o.duration_s = n; }
     else if (arg == "--server-pid") { ok = ParseUint(value, 0xFFFFFFFF, n); o.server_pid = n; }
+    else if (arg == "--threads") { ok = ParseUint(value, 256, n) && n > 0; o.threads = n; }
     else if (arg == "--label") o.label = value;
     else if (arg == "--csv") o.csv_path = value;
     else if (arg == "--connect-batch") { ok = ParseUint(value, 100000, n) && n > 0; o.connect_batch = n; }
@@ -209,11 +218,11 @@ struct Shared {
   bool sending = true;             // 요청을 계속 보낼 것인가
   bool closing = false;            // 종료 중이면 연결이 끊겨도 오류로 세지 않는다
 
-  std::uint64_t connect_ok = 0, connect_fail = 0, connect_done = 0;
+  std::uint64_t connect_ok = 0, connect_fail = 0;
   std::uint64_t sent = 0, received = 0, mismatches = 0, send_errors = 0, disconnects = 0;
   std::vector<std::uint32_t> rtt_us;   // 측정 구간에 보낸 요청의 왕복 시간(마이크로초)
   std::vector<std::uint32_t> lag_us;   // 예정 시각 대비 실제 전송 지연(마이크로초)
-  std::function<void()> on_connect_done;
+  std::atomic<std::uint64_t>* total_done = nullptr;  // 모든 작업 스레드의 연결 시도 완료 수 (조정자가 읽는다)
 };
 
 // payload 내용을 request_id와 위치로 정한다. 응답을 받으면 같은 규칙으로 다시 만들어 대조한다.
@@ -236,7 +245,6 @@ class Conn : public std::enable_shared_from_this<Conn> {
   void Connect(const tcp::endpoint& endpoint) {
     auto self = shared_from_this();
     socket_.async_connect(endpoint, [this, self](const boost::system::error_code& ec) {
-      ++shared_.connect_done;
       if (ec) {
         ++shared_.connect_fail;
       } else {
@@ -246,7 +254,7 @@ class Conn : public std::enable_shared_from_this<Conn> {
         socket_.set_option(tcp::no_delay(true), ignored);
         DoRead();
       }
-      if (shared_.on_connect_done) shared_.on_connect_done();
+      if (shared_.total_done) shared_.total_done->fetch_add(1);  // 연결 수와 실패 수를 센 뒤에 알린다
     });
   }
 
@@ -415,111 +423,266 @@ double MeanMegabytes(const std::vector<std::uint64_t>& v, std::size_t begin, std
   return sum / static_cast<double>(end - begin) / (1024.0 * 1024.0);
 }
 
+// 작업 스레드 하나가 맡은 연결들의 결과. 측정이 끝난 뒤 한 번에 모아 합친다.
+struct WorkerResult {
+  std::uint64_t connect_ok = 0, connect_fail = 0, sent = 0, received = 0, mismatches = 0, send_errors = 0, disconnects = 0;
+  std::uint64_t unanswered = 0;  // 측정 구간에 보냈는데 끝까지 응답이 없는 요청
+  std::uint64_t alive = 0;       // 측정이 끝났을 때 살아 있는 연결
+  std::vector<std::uint32_t> rtt_us, lag_us;
+};
+
+// 작업 스레드 하나. 자기 io_context와 연결 묶음을 갖고, 그 연결들의 모든 일을 자기 스레드에서만 한다.
+// 그래서 연결과 통계에는 잠금이 없다. 다른 스레드(조정자)가 부탁할 때는 post로 일을 넘기고, 값을 돌려받아야
+// 하면 Call로 결과를 기다린다.
+class Worker {
+ public:
+  Worker(const Options& options, Clock::duration interval, std::uint32_t connections,
+         std::atomic<std::uint64_t>& total_done, std::uint32_t seed)
+      : guard_(boost::asio::make_work_guard(io_)), connections_(connections), connect_timer_(io_), rng_(seed) {
+    shared_.options = options;
+    shared_.interval = interval;
+    shared_.total_done = &total_done;
+    thread_ = std::thread([this] { io_.run(); });
+  }
+
+  ~Worker() {
+    boost::asio::post(io_, [this] {
+      shared_.closing = true;
+      for (auto& conn : conns_) conn->Close();
+      connect_timer_.cancel();
+      guard_.reset();
+    });
+    Join();
+  }
+
+  void StartConnecting(const tcp::endpoint& endpoint) {
+    boost::asio::post(io_, [this, endpoint] {
+      endpoint_ = endpoint;
+      ConnectBatch();
+    });
+  }
+
+  // 연결된 소켓마다 t0 근처(한 간격 안에 흩어 놓은 시각)부터 요청 보내기를 시작한다.
+  void BeginTraffic(Clock::time_point t0) {
+    boost::asio::post(io_, [this, t0] {
+      std::uniform_real_distribution<double> offset(0.0, 1.0);
+      const double interval_seconds = std::chrono::duration<double>(shared_.interval).count();
+      for (auto& conn : conns_) {
+        if (!conn->connected()) continue;
+        const auto jitter = std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(offset(rng_) * interval_seconds));
+        conn->StartTraffic(t0 + jitter);
+      }
+    });
+  }
+
+  void SetMeasuring(bool on) {
+    boost::asio::post(io_, [this, on] { shared_.measuring = on; });
+  }
+
+  void StopSending() {
+    boost::asio::post(io_, [this] {
+      shared_.measuring = false;
+      shared_.sending = false;
+    });
+  }
+
+  std::pair<std::uint64_t, std::uint64_t> ConnectCounts() {
+    return Call([this] { return std::make_pair(shared_.connect_ok, shared_.connect_fail); });
+  }
+
+  // 측정 구간에 보낸 요청 중 아직 응답이 오지 않은 수
+  std::uint64_t PendingMeasured() {
+    return Call([this] {
+      std::uint64_t n = 0;
+      for (const auto& conn : conns_) n += conn->UnansweredMeasured();
+      return n;
+    });
+  }
+
+  // 결과를 모으고 연결을 모두 닫는다. 이후 스레드는 할 일이 없어 끝난다.
+  WorkerResult Finalize() {
+    return Call([this] {
+      shared_.closing = true;
+      shared_.sending = false;
+      shared_.measuring = false;
+      WorkerResult r;
+      r.connect_ok = shared_.connect_ok;
+      r.connect_fail = shared_.connect_fail;
+      r.sent = shared_.sent;
+      r.received = shared_.received;
+      r.mismatches = shared_.mismatches;
+      r.send_errors = shared_.send_errors;
+      r.disconnects = shared_.disconnects;
+      for (const auto& conn : conns_) {
+        r.unanswered += conn->UnansweredMeasured();
+        if (conn->connected()) ++r.alive;
+      }
+      r.rtt_us = std::move(shared_.rtt_us);
+      r.lag_us = std::move(shared_.lag_us);
+      for (auto& conn : conns_) conn->Close();
+      connect_timer_.cancel();
+      guard_.reset();
+      return r;
+    });
+  }
+
+  void Join() {
+    if (thread_.joinable()) thread_.join();
+  }
+
+ private:
+  // 이 스레드에서 fn을 실행시키고 결과를 기다려 받는다.
+  template <typename F>
+  auto Call(F fn) -> decltype(fn()) {
+    using R = decltype(fn());
+    std::promise<R> promise;
+    auto future = promise.get_future();
+    boost::asio::post(io_, [&] { promise.set_value(fn()); });
+    return future.get();
+  }
+
+  void ConnectBatch() {
+    const Options& o = shared_.options;
+    for (std::uint32_t i = 0; i < o.connect_batch && launched_ < connections_; ++i, ++launched_) {
+      conns_.push_back(std::make_shared<Conn>(io_, shared_));
+      conns_.back()->Connect(endpoint_);
+    }
+    if (launched_ < connections_) {
+      connect_timer_.expires_after(std::chrono::milliseconds(o.connect_gap_ms));
+      connect_timer_.async_wait([this](const boost::system::error_code& ec) {
+        if (!ec) ConnectBatch();
+      });
+    }
+  }
+
+  // 선언 순서가 곧 초기화 순서다. io_context가 가장 먼저, 스레드가 가장 나중이다.
+  boost::asio::io_context io_;
+  Shared shared_;
+  boost::asio::executor_work_guard<boost::asio::io_context::executor_type> guard_;
+  std::uint32_t connections_;
+  boost::asio::steady_timer connect_timer_;
+  std::mt19937_64 rng_;
+  tcp::endpoint endpoint_;
+  std::uint32_t launched_ = 0;
+  std::vector<std::shared_ptr<Conn>> conns_;
+  std::thread thread_;
+};
+
+// 실행 흐름을 조정하는 쪽(메인 스레드). 작업 스레드들에 단계를 알리고, 서버 자원을 읽고, 결과를 합쳐 출력한다.
 class Runner {
  public:
   Runner(boost::asio::io_context& io, Options options)
-      : io_(io),
-        connect_timer_(io),
-        phase_timer_(io),
-        sample_timer_(io),
-        drain_timer_(io),
-        rng_(std::random_device{}()) {
-    shared_.options = std::move(options);
-    const auto& o = shared_.options;
-    const double seconds = o.mode == "idle" ? o.idle_interval_s : 1.0 / o.rate;
-    shared_.interval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
-    shared_.on_connect_done = [this] { OnConnectDone(); };
+      : io_(io), options_(std::move(options)), poll_timer_(io), phase_timer_(io), sample_timer_(io), drain_timer_(io) {
+    const double seconds = options_.mode == "idle" ? options_.idle_interval_s : 1.0 / options_.rate;
+    interval_ = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(seconds));
   }
 
   int exit_code() const { return exit_code_; }
 
   void Start() {
-    const auto& o = shared_.options;
     boost::system::error_code ec;
     tcp::resolver resolver(io_);
-    const auto endpoints = resolver.resolve(o.host, std::to_string(o.port), ec);
+    const auto endpoints = resolver.resolve(options_.host, std::to_string(options_.port), ec);
     if (ec || endpoints.empty()) {
       std::cerr << "서버 주소를 해석할 수 없습니다: " << game::common::ErrorText(ec) << "\n";
       exit_code_ = 2;
       return;
     }
     endpoint_ = endpoints.begin()->endpoint();
+
+    // 연결을 작업 스레드들에 나눈다. 나머지는 앞쪽 스레드가 하나씩 더 맡는다.
+    threads_ = std::max<std::uint32_t>(1, std::min(options_.threads, options_.connections));
+    Options worker_options = options_;
+    worker_options.connect_batch = std::max<std::uint32_t>(1, options_.connect_batch / threads_);
+    const std::uint32_t base = options_.connections / threads_;
+    const std::uint32_t extra = options_.connections % threads_;
+    std::random_device random;
+    for (std::uint32_t i = 0; i < threads_; ++i) {
+      workers_.push_back(std::make_unique<Worker>(worker_options, interval_, base + (i < extra ? 1 : 0), total_done_,
+                                                  static_cast<std::uint32_t>(random())));
+    }
+
     connect_started_ = Clock::now();
-    std::cout << "연결 수립 시작: " << o.connections << "개 (" << o.connect_batch << "개씩 " << o.connect_gap_ms << "ms 간격)\n";
-    ConnectBatch();
+    std::cout << "연결 수립 시작: " << options_.connections << "개, 작업 스레드 " << threads_ << "개 (스레드당 "
+              << worker_options.connect_batch << "개씩 " << options_.connect_gap_ms << "ms 간격)\n";
+    for (auto& worker : workers_) worker->StartConnecting(endpoint_);
+    PollConnect();
   }
 
  private:
-  void ConnectBatch() {
-    const auto& o = shared_.options;
-    for (std::uint32_t i = 0; i < o.connect_batch && launched_ < o.connections; ++i, ++launched_) {
-      conns_.push_back(std::make_shared<Conn>(io_, shared_));
-      conns_.back()->Connect(endpoint_);
+  // 모든 연결 시도가 끝났는지 20ms마다 확인한다. 너무 오래 걸리면(120초) 된 것만으로 진행한다.
+  void PollConnect() {
+    const bool all_done = total_done_.load() >= options_.connections;
+    const bool timed_out = Clock::now() - connect_started_ > std::chrono::seconds(120);
+    if (all_done || timed_out) {
+      BeginTraffic();
+      return;
     }
-    if (launched_ < o.connections) {
-      connect_timer_.expires_after(std::chrono::milliseconds(o.connect_gap_ms));
-      connect_timer_.async_wait([this](const boost::system::error_code& ec) { if (!ec) ConnectBatch(); });
-    }
-  }
-
-  void OnConnectDone() {
-    if (traffic_started_ || shared_.connect_done < shared_.options.connections) return;
-    BeginTraffic();
+    poll_timer_.expires_after(std::chrono::milliseconds(20));
+    poll_timer_.async_wait([this](const boost::system::error_code& ec) {
+      if (!ec) PollConnect();
+    });
   }
 
   void BeginTraffic() {
-    traffic_started_ = true;
-    connect_seconds_ = std::chrono::duration<double>(Clock::now() - connect_started_).count();
-    std::cout << "연결 완료: 성공 " << shared_.connect_ok << ", 실패 " << shared_.connect_fail << " (" << std::fixed
-              << std::setprecision(1) << connect_seconds_ << "초)\n";
-    if (shared_.connect_ok == 0) {
+    std::uint64_t ok = 0, fail = 0;
+    for (auto& worker : workers_) {
+      const auto counts = worker->ConnectCounts();
+      ok += counts.first;
+      fail += counts.second;
+    }
+    const double connect_seconds = std::chrono::duration<double>(Clock::now() - connect_started_).count();
+    std::cout << "연결 완료: 성공 " << ok << ", 실패 " << fail << " (" << std::fixed << std::setprecision(1)
+              << connect_seconds << "초)\n";
+    if (ok == 0) {
       std::cerr << "연결된 소켓이 없어 측정할 수 없습니다.\n";
       exit_code_ = 2;
-      Shutdown();
+      FinishWithoutReport();
       return;
     }
 
-    // 모든 연결이 같은 순간에 보내면 서버에 순간 폭주가 생긴다. 첫 전송 시각을 한 간격 안에 흩어 놓는다.
     const auto t0 = Clock::now() + std::chrono::milliseconds(500);
-    std::uniform_real_distribution<double> offset(0.0, 1.0);
-    for (auto& conn : conns_) {
-      if (!conn->connected()) continue;
-      const auto jitter = std::chrono::duration_cast<Clock::duration>(
-          std::chrono::duration<double>(offset(rng_) * std::chrono::duration<double>(shared_.interval).count()));
-      conn->StartTraffic(t0 + jitter);
-    }
-    std::cout << "워밍업 " << shared_.options.warmup_s << "초 (기록하지 않음)\n";
-    phase_timer_.expires_at(t0 + std::chrono::seconds(shared_.options.warmup_s));
-    phase_timer_.async_wait([this](const boost::system::error_code& ec) { if (!ec) BeginMeasure(); });
+    for (auto& worker : workers_) worker->BeginTraffic(t0);
+    std::cout << "워밍업 " << options_.warmup_s << "초 (기록하지 않음)\n";
+    phase_timer_.expires_at(t0 + std::chrono::seconds(options_.warmup_s));
+    phase_timer_.async_wait([this](const boost::system::error_code& ec) {
+      if (!ec) BeginMeasure();
+    });
   }
 
   void BeginMeasure() {
-    shared_.measuring = true;
+    for (auto& worker : workers_) worker->SetMeasuring(true);
+    measuring_ = true;
     measure_started_ = Clock::now();
-    server_start_ = ReadUsage(shared_.options.server_pid);
+    server_start_ = ReadUsage(options_.server_pid);
     generator_start_ = ReadUsage(0);
-    std::cout << "측정 " << shared_.options.duration_s << "초 시작\n";
+    std::cout << "측정 " << options_.duration_s << "초 시작\n";
     Sample();
-    phase_timer_.expires_after(std::chrono::seconds(shared_.options.duration_s));
-    phase_timer_.async_wait([this](const boost::system::error_code& ec) { if (!ec) EndMeasure(); });
+    phase_timer_.expires_after(std::chrono::seconds(options_.duration_s));
+    phase_timer_.async_wait([this](const boost::system::error_code& ec) {
+      if (!ec) EndMeasure();
+    });
   }
 
   // 1초마다 서버 메모리를 읽어 둔다. 메모리가 계속 늘어나는지(누수) 보려는 것이다.
   void Sample() {
-    if (!shared_.measuring) return;
-    if (shared_.options.server_pid != 0) {
-      const ProcessUsage usage = ReadUsage(shared_.options.server_pid);
+    if (!measuring_) return;
+    if (options_.server_pid != 0) {
+      const ProcessUsage usage = ReadUsage(options_.server_pid);
       if (usage.valid) server_ws_samples_.push_back(usage.working_set);
     }
     sample_timer_.expires_after(std::chrono::seconds(1));
-    sample_timer_.async_wait([this](const boost::system::error_code& ec) { if (!ec) Sample(); });
+    sample_timer_.async_wait([this](const boost::system::error_code& ec) {
+      if (!ec) Sample();
+    });
   }
 
   void EndMeasure() {
-    shared_.measuring = false;
-    shared_.sending = false;  // 더 보내지 않는다
+    measuring_ = false;
+    for (auto& worker : workers_) worker->StopSending();  // 더 보내지 않는다
     measure_seconds_ = std::chrono::duration<double>(Clock::now() - measure_started_).count();
-    server_end_ = ReadUsage(shared_.options.server_pid);
+    server_end_ = ReadUsage(options_.server_pid);
     generator_end_ = ReadUsage(0);
     drain_started_ = Clock::now();
     CheckDrain();
@@ -527,85 +690,99 @@ class Runner {
 
   // 측정 구간에 보낸 요청의 응답이 모두 오거나 최대 대기 시간이 지날 때까지 기다린다.
   void CheckDrain() {
-    bool pending = false;
-    for (const auto& conn : conns_) {
-      if (conn->connected() && conn->HasPendingMeasured()) { pending = true; break; }
-    }
+    std::uint64_t pending = 0;
+    for (auto& worker : workers_) pending += worker->PendingMeasured();
     const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - drain_started_);
-    if (!pending || waited.count() >= shared_.options.drain_ms) {
+    if (pending == 0 || waited.count() >= options_.drain_ms) {
       Finish();
       return;
     }
     drain_timer_.expires_after(std::chrono::milliseconds(50));
-    drain_timer_.async_wait([this](const boost::system::error_code& ec) { if (!ec) CheckDrain(); });
+    drain_timer_.async_wait([this](const boost::system::error_code& ec) {
+      if (!ec) CheckDrain();
+    });
   }
 
   void Finish() {
-    shared_.closing = true;
-    std::uint64_t unanswered = 0;
-    std::uint64_t alive = 0;
-    for (const auto& conn : conns_) {
-      unanswered += conn->UnansweredMeasured();
-      if (conn->connected()) ++alive;
+    // 작업 스레드들의 결과를 모아 하나로 합친다. 연결은 이 과정에서 닫힌다.
+    WorkerResult total;
+    for (auto& worker : workers_) {
+      WorkerResult r = worker->Finalize();
+      total.connect_ok += r.connect_ok;
+      total.connect_fail += r.connect_fail;
+      total.sent += r.sent;
+      total.received += r.received;
+      total.mismatches += r.mismatches;
+      total.send_errors += r.send_errors;
+      total.disconnects += r.disconnects;
+      total.unanswered += r.unanswered;
+      total.alive += r.alive;
+      total.rtt_us.insert(total.rtt_us.end(), r.rtt_us.begin(), r.rtt_us.end());
+      total.lag_us.insert(total.lag_us.end(), r.lag_us.begin(), r.lag_us.end());
     }
-    Report(unanswered, alive);
-    Shutdown();
+    for (auto& worker : workers_) worker->Join();
+    Report(total);
+    CancelTimers();
   }
 
-  void Shutdown() {
-    shared_.closing = true;
-    shared_.sending = false;
-    for (auto& conn : conns_) conn->Close();
-    connect_timer_.cancel();
+  void FinishWithoutReport() {
+    for (auto& worker : workers_) worker->Finalize();
+    for (auto& worker : workers_) worker->Join();
+    CancelTimers();
+  }
+
+  void CancelTimers() {
+    poll_timer_.cancel();
     phase_timer_.cancel();
     sample_timer_.cancel();
     drain_timer_.cancel();
   }
 
-  void Report(std::uint64_t unanswered, std::uint64_t alive) {
-    const Options& o = shared_.options;
-    std::sort(shared_.rtt_us.begin(), shared_.rtt_us.end());
-    std::sort(shared_.lag_us.begin(), shared_.lag_us.end());
+  void Report(WorkerResult& t) {
+    const Options& o = options_;
+    std::sort(t.rtt_us.begin(), t.rtt_us.end());
+    std::sort(t.lag_us.begin(), t.lag_us.end());
 
-    const double p50 = Percentile(shared_.rtt_us, 50), p95 = Percentile(shared_.rtt_us, 95),
-                 p99 = Percentile(shared_.rtt_us, 99), p999 = Percentile(shared_.rtt_us, 99.9),
-                 pmax = shared_.rtt_us.empty() ? 0.0 : shared_.rtt_us.back() / 1000.0;
-    const double lag_p99 = Percentile(shared_.lag_us, 99);
-    const double lag_max = shared_.lag_us.empty() ? 0.0 : shared_.lag_us.back() / 1000.0;
+    const double p50 = Percentile(t.rtt_us, 50), p95 = Percentile(t.rtt_us, 95), p99 = Percentile(t.rtt_us, 99),
+                 p999 = Percentile(t.rtt_us, 99.9), pmax = t.rtt_us.empty() ? 0.0 : t.rtt_us.back() / 1000.0;
+    const double lag_p99 = Percentile(t.lag_us, 99);
+    const double lag_max = t.lag_us.empty() ? 0.0 : t.lag_us.back() / 1000.0;
 
-    const double connect_rate = static_cast<double>(shared_.connect_ok) / static_cast<double>(o.connections);
-    const double errors = static_cast<double>(shared_.mismatches + unanswered + shared_.send_errors);
-    const double error_rate = shared_.sent == 0 ? 0.0 : errors / static_cast<double>(shared_.sent);
-    const double throughput = measure_seconds_ > 0 ? static_cast<double>(shared_.received) / measure_seconds_ : 0.0;
+    const double connect_rate = static_cast<double>(t.connect_ok) / static_cast<double>(o.connections);
+    const double errors = static_cast<double>(t.mismatches + t.unanswered + t.send_errors);
+    const double error_rate = t.sent == 0 ? 0.0 : errors / static_cast<double>(t.sent);
+    const double throughput = measure_seconds_ > 0 ? static_cast<double>(t.received) / measure_seconds_ : 0.0;
 
     // 서버/생성기 CPU는 측정 구간 동안 쓴 CPU 시간을 실제 흐른 시간으로 나눈 값(한 코어 기준 %)이다.
     const auto cpu_percent = [this](const ProcessUsage& a, const ProcessUsage& b) {
       return (a.valid && b.valid && measure_seconds_ > 0) ? (b.cpu_seconds - a.cpu_seconds) / measure_seconds_ * 100.0 : -1.0;
     };
     const double server_cpu = cpu_percent(server_start_, server_end_);
-    const double generator_cpu = cpu_percent(generator_start_, generator_end_);
+    const double generator_cpu = cpu_percent(generator_start_, generator_end_);  // 모든 스레드의 합
+    // 포화 판정은 "스레드당 평균"으로 한다. 스레드 하나가 한 코어의 80%를 넘게 쓰면 그 스레드는 일을 따라가기 어렵다.
+    const double generator_cpu_per_thread = generator_cpu >= 0 ? generator_cpu / static_cast<double>(threads_) : -1.0;
 
     // 메모리 증가: 측정 구간의 후반 1/3 평균을 전반 1/3 평균으로 나눈다.
-    double mem_growth = -1.0, ws_first = 0, ws_last = 0;
+    double mem_growth = -1.0;
     const auto& ws = server_ws_samples_;
     if (ws.size() >= 6) {
       const std::size_t third = ws.size() / 3;
-      ws_first = MeanMegabytes(ws, 0, third);
-      ws_last = MeanMegabytes(ws, ws.size() - third, ws.size());
-      mem_growth = ws_first > 0 ? ws_last / ws_first : -1.0;
+      const double first = MeanMegabytes(ws, 0, third);
+      const double last = MeanMegabytes(ws, ws.size() - third, ws.size());
+      mem_growth = first > 0 ? last / first : -1.0;
     }
 
     const double mb = 1024.0 * 1024.0;
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "\n==== 결과" << (o.label.empty() ? "" : " [" + o.label + "]") << " ====\n"
-              << "워크로드      : " << o.mode << ", 연결 " << o.connections << "개, "
+              << "워크로드      : " << o.mode << ", 연결 " << o.connections << "개, 생성기 스레드 " << threads_ << "개, "
               << (o.mode == "idle" ? "Ping 간격 " + std::to_string(o.idle_interval_s) + "초"
                                    : "연결당 " + std::to_string(o.rate) + "건/초")
               << ", payload " << o.payload << "B, 측정 " << measure_seconds_ << "초\n"
-              << "연결          : 성공 " << shared_.connect_ok << " / 실패 " << shared_.connect_fail << " (성공률 "
-              << connect_rate * 100 << "%), 측정 끝에 살아 있는 연결 " << alive << ", 도중에 끊긴 연결 " << shared_.disconnects << "\n"
-              << "요청          : 전송 " << shared_.sent << ", 응답 " << shared_.received << ", 불일치 " << shared_.mismatches
-              << ", 응답 없음 " << unanswered << ", 전송 오류 " << shared_.send_errors << " (오류율 " << error_rate * 100 << "%)\n"
+              << "연결          : 성공 " << t.connect_ok << " / 실패 " << t.connect_fail << " (성공률 " << connect_rate * 100
+              << "%), 측정 끝에 살아 있는 연결 " << t.alive << ", 도중에 끊긴 연결 " << t.disconnects << "\n"
+              << "요청          : 전송 " << t.sent << ", 응답 " << t.received << ", 불일치 " << t.mismatches << ", 응답 없음 "
+              << t.unanswered << ", 전송 오류 " << t.send_errors << " (오류율 " << error_rate * 100 << "%)\n"
               << "처리량        : " << throughput << " 응답/초\n"
               << "왕복 지연(ms) : p50 " << p50 << "  p95 " << p95 << "  p99 " << p99 << "  p99.9 " << p999 << "  최대 " << pmax << "\n"
               << "생성기 스케줄 지연(ms): p99 " << lag_p99 << "  최대 " << lag_max << "\n";
@@ -618,11 +795,12 @@ class Runner {
       std::cout << "서버          : CPU/메모리를 측정하지 않음 (--server-pid 필요, 윈도우만 지원)\n";
     }
     if (generator_cpu >= 0) {
-      std::cout << "생성기        : CPU " << generator_cpu << "% (한 코어 기준), 메모리 " << generator_end_.working_set / mb << "MB\n";
+      std::cout << "생성기        : 스레드 " << threads_ << "개, CPU 합계 " << generator_cpu << "% (스레드당 평균 "
+                << generator_cpu_per_thread << "%), 메모리 " << generator_end_.working_set / mb << "MB\n";
     }
 
     // ---- 판정 ----
-    const bool saturated = lag_p99 > o.max_lag_p99_ms || (generator_cpu >= 0 && generator_cpu > o.max_generator_cpu);
+    const bool saturated = lag_p99 > o.max_lag_p99_ms || (generator_cpu_per_thread >= 0 && generator_cpu_per_thread > o.max_generator_cpu);
     const bool connect_pass = connect_rate >= o.min_connect_rate;
     const bool error_pass = error_rate <= o.max_error_rate;
     const bool latency_pass = p99 <= o.max_p99_ms;
@@ -644,13 +822,16 @@ class Runner {
       exit_code_ = pass ? 0 : 1;
     }
 
-    if (!o.csv_path.empty()) WriteCsv(o, unanswered, alive, throughput, p50, p95, p99, p999, pmax, lag_p99, server_cpu,
-                                     generator_cpu, mem_growth, saturated ? "saturated" : (pass ? "pass" : "fail"));
+    if (!o.csv_path.empty()) {
+      WriteCsv(t, throughput, p50, p95, p99, p999, pmax, lag_p99, server_cpu, generator_cpu, generator_cpu_per_thread,
+               mem_growth, saturated ? "saturated" : (pass ? "pass" : "fail"));
+    }
   }
 
-  void WriteCsv(const Options& o, std::uint64_t unanswered, std::uint64_t alive, double throughput, double p50,
-                double p95, double p99, double p999, double pmax, double lag_p99, double server_cpu,
-                double generator_cpu, double mem_growth, const char* verdict) {
+  void WriteCsv(const WorkerResult& t, double throughput, double p50, double p95, double p99, double p999, double pmax,
+                double lag_p99, double server_cpu, double generator_cpu, double generator_cpu_per_thread,
+                double mem_growth, const char* verdict) {
+    const Options& o = options_;
     const bool exists = std::ifstream(o.csv_path).good() && std::ifstream(o.csv_path).peek() != std::ifstream::traits_type::eof();
     std::ofstream file(o.csv_path, std::ios::app);
     if (!file) {
@@ -658,33 +839,35 @@ class Runner {
       return;
     }
     if (!exists) {
-      file << "label,mode,connections,connect_ok,connect_fail,alive_at_end,disconnects,rate,payload,measure_s,sent,received,"
+      file << "label,mode,connections,threads,connect_ok,connect_fail,alive_at_end,disconnects,rate,payload,measure_s,sent,received,"
               "mismatches,unanswered,send_errors,throughput_per_s,p50_ms,p95_ms,p99_ms,p999_ms,max_ms,lag_p99_ms,"
-              "server_cpu_pct,server_ws_start_mb,server_ws_end_mb,server_ws_peak_mb,mem_growth,generator_cpu_pct,verdict\n";
+              "server_cpu_pct,server_ws_start_mb,server_ws_end_mb,server_ws_peak_mb,mem_growth,generator_cpu_total_pct,"
+              "generator_cpu_per_thread_pct,verdict\n";
     }
     const double mb = 1024.0 * 1024.0;
-    file << std::fixed << std::setprecision(3) << o.label << ',' << o.mode << ',' << o.connections << ',' << shared_.connect_ok
-         << ',' << shared_.connect_fail << ',' << alive << ',' << shared_.disconnects << ',' << (o.mode == "idle" ? 1.0 / o.idle_interval_s : o.rate)
-         << ',' << o.payload << ',' << measure_seconds_ << ',' << shared_.sent << ',' << shared_.received << ',' << shared_.mismatches
-         << ',' << unanswered << ',' << shared_.send_errors << ',' << throughput << ',' << p50 << ',' << p95 << ',' << p99
-         << ',' << p999 << ',' << pmax << ',' << lag_p99 << ',' << server_cpu << ',' << server_start_.working_set / mb << ','
-         << server_end_.working_set / mb << ',' << server_end_.peak_working_set / mb << ',' << mem_growth << ',' << generator_cpu
-         << ',' << verdict << '\n';
+    file << std::fixed << std::setprecision(3) << o.label << ',' << o.mode << ',' << o.connections << ',' << threads_ << ','
+         << t.connect_ok << ',' << t.connect_fail << ',' << t.alive << ',' << t.disconnects << ','
+         << (o.mode == "idle" ? 1.0 / o.idle_interval_s : o.rate) << ',' << o.payload << ',' << measure_seconds_ << ',' << t.sent
+         << ',' << t.received << ',' << t.mismatches << ',' << t.unanswered << ',' << t.send_errors << ',' << throughput << ','
+         << p50 << ',' << p95 << ',' << p99 << ',' << p999 << ',' << pmax << ',' << lag_p99 << ',' << server_cpu << ','
+         << server_start_.working_set / mb << ',' << server_end_.working_set / mb << ',' << server_end_.peak_working_set / mb << ','
+         << mem_growth << ',' << generator_cpu << ',' << generator_cpu_per_thread << ',' << verdict << '\n';
   }
 
   boost::asio::io_context& io_;
-  Shared shared_;
-  std::vector<std::shared_ptr<Conn>> conns_;
+  Options options_;
+  Clock::duration interval_{};
   tcp::endpoint endpoint_;
-  std::uint32_t launched_ = 0;
-  bool traffic_started_ = false;
+  std::uint32_t threads_ = 1;
+  std::atomic<std::uint64_t> total_done_{0};
+  std::vector<std::unique_ptr<Worker>> workers_;
   int exit_code_ = 0;
+  bool measuring_ = false;
 
-  boost::asio::steady_timer connect_timer_, phase_timer_, sample_timer_, drain_timer_;
-  std::mt19937_64 rng_;
+  boost::asio::steady_timer poll_timer_, phase_timer_, sample_timer_, drain_timer_;
 
   Clock::time_point connect_started_{}, measure_started_{}, drain_started_{};
-  double connect_seconds_ = 0.0, measure_seconds_ = 0.0;
+  double measure_seconds_ = 0.0;
   ProcessUsage server_start_, server_end_, generator_start_, generator_end_;
   std::vector<std::uint64_t> server_ws_samples_;
 };

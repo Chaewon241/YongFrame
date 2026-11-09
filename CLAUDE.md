@@ -4,7 +4,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 ## 현재 상태
 
-- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준 측정을 마쳤고 다음은 부하 생성기 강화(docs/stage3.md). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
+- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준·확장 측정을 마쳤고(Active 4,000연결까지 합격, 서버 스레드 1개의 처리량 상한 관측 약 4.5만/s) 다음은 비교 실험 1~3(docs/stage3.md, results/stage3/scaled.md). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
 - 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
@@ -147,7 +147,7 @@ build/windows-local/Release/game_server.exe --port 7777 --log-level info --stats
 build/windows-local/Release/load_client.exe --port 7777 --connections 1000 --mode active --server-pid <서버PID> --label 이름 --csv results/stage3/raw/파일.csv   # 터미널 2
 ```
 
-옵션: `--mode idle|active`, `--rate`(연결당 초당 건수), `--payload`, `--warmup`, `--duration`, `--server-pid`(서버 CPU/메모리 측정), `--csv`. 종료 코드 0=합격, 1=불합격, 3=생성기 포화로 판정 불가. 합격 기준과 절차는 docs/stage3.md, 결과는 results/stage3/. 측정할 때는 **Release 빌드**로, 다른 무거운 작업을 하지 않는 상태에서 한다. 서버는 `--tcp-nodelay on|off`도 받는다.
+옵션: `--mode idle|active`, `--rate`(연결당 초당 건수), `--payload`, `--warmup`, `--duration`, `--threads`(생성기 스레드 수, 연결 5,000 이상은 4 권장), `--server-pid`(서버 CPU/메모리 측정), `--csv`. 종료 코드 0=합격, 1=불합격, 3=생성기 포화로 판정 불가. 합격 기준과 절차는 docs/stage3.md, 결과는 results/stage3/. 측정할 때는 **Release 빌드**로, 다른 무거운 작업을 하지 않는 상태에서 한다. 서버는 `--tcp-nodelay on|off`도 받는다.
 
 ### 서버 실행 (Windows, 확인됨)
 
@@ -176,7 +176,7 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/client/blocking_client.h/.cpp`: 모든 대기에 타임아웃이 있는 동기식 클라이언트 (`client_core`). 테스트와 `ping_client`가 공유
 - `src/client/ping_client.cpp`: 수동 확인용 실행 파일
 - `src/client/chat_client.cpp`: 대화형 채팅 클라이언트(입력 스레드 + `io_context`)
-- `src/tools/load_client.cpp`: 3단계 부하 생성기(스레드 1개, 열린 루프, 요청별 응답 대조, 서버 프로세스 CPU/메모리 샘플링, 생성기 포화 감지, 합격 판정)
+- `src/tools/load_client.cpp`: 3단계 부하 생성기(`--threads N` 다중 스레드, 기본 1, 열린 루프, 요청별 응답 대조, 서버 프로세스 CPU/메모리 샘플링, 생성기 포화 감지, 합격 판정)
 - `src/tools/mysql_check.cpp`: MySQL 접속·문자 집합 진단 도구 (`mysql_check`). 비밀번호는 환경변수 `GAME_DB_PASSWORD`로만 받는다
 - `src/common/error_text.h/.cpp`: 윈도우 ANSI 오류 메시지를 UTF-8로 변환 (`common_util`). 오류 메시지를 로그/출력에 넣을 때는 `ec.message()` 대신 `common::ErrorText(ec)`를 쓴다
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
