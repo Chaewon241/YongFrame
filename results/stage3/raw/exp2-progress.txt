@@ -1,0 +1,25 @@
+﻿1/24 exp2-nodelayon-1000-rate10-r1 종료코드=0
+2/24 exp2-nodelayoff-1000-rate10-r1 종료코드=0
+3/24 exp2-nodelayoff-1000-rate10-r2 종료코드=0
+4/24 exp2-nodelayon-1000-rate10-r2 종료코드=0
+5/24 exp2-nodelayon-1000-rate10-r3 종료코드=0
+6/24 exp2-nodelayoff-1000-rate10-r3 종료코드=0
+7/24 exp2-nodelayon-2000-rate10-r1 종료코드=0
+8/24 exp2-nodelayoff-2000-rate10-r1 종료코드=0
+9/24 exp2-nodelayoff-2000-rate10-r2 종료코드=0
+10/24 exp2-nodelayon-2000-rate10-r2 종료코드=0
+11/24 exp2-nodelayon-2000-rate10-r3 종료코드=0
+12/24 exp2-nodelayoff-2000-rate10-r3 종료코드=0
+13/24 exp2-nodelayon-100-rate100-r1 종료코드=0
+14/24 exp2-nodelayoff-100-rate100-r1 종료코드=0
+15/24 exp2-nodelayoff-100-rate100-r2 종료코드=0
+16/24 exp2-nodelayon-100-rate100-r2 종료코드=0
+17/24 exp2-nodelayon-100-rate100-r3 종료코드=0
+18/24 exp2-nodelayoff-100-rate100-r3 종료코드=0
+19/24 exp2-nodelayon-200-rate100-r1 종료코드=0
+20/24 exp2-nodelayoff-200-rate100-r1 종료코드=0
+21/24 exp2-nodelayoff-200-rate100-r2 종료코드=0
+22/24 exp2-nodelayon-200-rate100-r2 종료코드=0
+23/24 exp2-nodelayon-200-rate100-r3 종료코드=0
+24/24 exp2-nodelayoff-200-rate100-r3 종료코드=0
+완료

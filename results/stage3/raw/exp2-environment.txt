@@ -1,0 +1,10 @@
+﻿OS: Microsoft Windows 11 Home 10.0.26200
+CPU: AMD Ryzen 5 5600 6-Core Processor (6코어/12스레드)
+RAM: 16 GB
+컴파일러: MSVC 14.44.35207 (VS 2022), 빌드: Release
+커밋: 1edd41f (작업 폴더에 커밋되지 않은 변경 있음)
+실험 2: 서버 --tcp-nodelay on vs off. 로그 info, io_context 스레드 1개, 인메모리 저장소. 생성기 소켓은 항상 TCP_NODELAY 켬
+부하 생성기: load_client --threads 4, 같은 PC 루프백, payload 64B, 워밍업 5초, 측정 30초
+워크로드 A: 연결당 초당 10건, 연결 1000/2000. 워크로드 B: 연결당 초당 100건, 연결 100/200
+순서: 회차마다 두 설정을 번갈아 실행(1,3회차는 on 먼저, 2회차는 off 먼저)
+배경: 측정 중 게임/메신저 프로그램이 실행 중일 수 있음. 실행 직전 전체 CPU 사용률(2초 샘플)을 exp2-background-cpu.txt에 기록
