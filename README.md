@@ -18,6 +18,7 @@ Boost.Asio 기반 C++ 게임 서버를 작은 기능부터 만들고, 각 단계
 | [docs/protocol-chat.md](docs/protocol-chat.md) | 2단계 채팅 프로토콜 (초안) |
 | [docs/stage3.md](docs/stage3.md) | 3단계 측정 계획과 합격 기준, 진행 상태 |
 | [docs/game-plan.md](docs/game-plan.md) | 4단계 게임 기획 초안과 서버 영향 |
+| [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법 |
 | [CLAUDE.md](CLAUDE.md) | 개발 규칙과 확인된 빌드·실행 명령 (작업 도구용 안내) |
 
 ## 빠른 시작 (Windows)

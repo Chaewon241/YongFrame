@@ -6,6 +6,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 - 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준·확장 측정을 마쳤고(Active 4,000연결까지 합격, 서버 스레드 1개의 처리량 상한 관측 약 4.5만/s) 비교 실험 1(로그 레벨)도 완료(`debug`는 응답당 CPU 5~6배, 부하 측정은 `info`), 실험 2(Nagle)도 완료(끄는 이득 없음, 켬 유지)이고 다음은 실험 3(스레드 수)(docs/stage3.md, results/stage3/). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
 - 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
+- **Unreal 연동 스파이크 성공**: `D:\UnrealProjects\YongClient`(UE 5.4.4, 이 저장소와 별개)에서 서버에 접속해 Ping 5건 왕복을 확인했다(docs/unreal-client.md). 이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치라 14.44로 고정했다. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싸야 한다(점에서 쪼개짐).
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -21,6 +22,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/stage2.md](docs/stage2.md) | 2단계 결정 기록, 작업 순서와 진행 상태, MySQL 준비 방법 |
 | [docs/stage3.md](docs/stage3.md) | 3단계 측정 계획과 합격 기준(측정 전 확정), 진행 상태, 측정 도구에서 겪은 문제 |
 | [docs/game-plan.md](docs/game-plan.md) | 4단계 게임 기획 초안(1~4인 협동 농장, Unreal 클라이언트), 서버 영향, 미정 사항 |
+| [docs/unreal-client.md](docs/unreal-client.md) | Unreal 5.4.4 연동 스파이크(Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법, 겪은 문제, 확인 방법 |
 | [README.md](README.md) | 진입점. 위 문서 링크와 바로 시작할 작업 |
 
 `project.md`는 CLAUDE.md와 역할이 다르다(사람이 읽는 로드맵이며 README가 링크한다). 이름을 바꾸거나 합치지 않는다. 계획·계약이 바뀌면 CLAUDE.md가 아니라 해당 문서를 고치고, 여기에는 요약만 둔다.

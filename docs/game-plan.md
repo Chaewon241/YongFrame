@@ -42,6 +42,7 @@
 
 ## 엔진 연동에서 먼저 확인할 위험
 
+- **(해소됨: 스파이크 성공, [unreal-client.md](unreal-client.md))** Unreal 5.4.4에서 Protobuf 6.33.4를 빌드해 TCP로 접속하고 Ping을 왕복하는 것까지 확인했다. 아래는 스파이크 전의 위험 기록이다.
 - **Unreal 클라이언트가 이 프로토콜을 말할 수 있어야 한다.** 가장 큰 미지수는 Unreal 프로젝트에서 Protobuf(C++)를 빌드해 쓰는 것이다. 본격적인 구현 전에 **작은 시험(스파이크)** 으로 먼저 확인한다: Unreal에서 TCP로 접속해 `PingRequest`를 보내고 `PingResponse`를 받는 것까지.
 - 프레임 형식(길이 4바이트 + ID 2바이트 + 본문)은 Unreal 쪽에서 직접 구현해도 간단하다. Protobuf 연동이 막히면 본문 인코딩 방식을 바꿀지 따로 판단한다.
 
