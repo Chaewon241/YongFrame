@@ -1,0 +1,10 @@
+﻿1/9 game-r500-rep1 종료코드=0
+2/9 game-r500-rep2 종료코드=0
+3/9 game-r500-rep3 종료코드=0
+4/9 game-r600-rep1 종료코드=1
+5/9 game-r600-rep2 종료코드=1
+6/9 game-r600-rep3 종료코드=1
+7/9 game-r700-rep1 종료코드=1
+8/9 game-r700-rep2 종료코드=1
+9/9 game-r700-rep3 종료코드=1
+완료

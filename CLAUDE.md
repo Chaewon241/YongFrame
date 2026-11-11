@@ -6,7 +6,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 - 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준·확장 측정을 마쳤고(Active 4,000연결까지 합격, 서버 스레드 1개의 처리량 상한 관측 약 4.5만/s) 비교 실험 1(로그 레벨)도 완료(`debug`는 응답당 CPU 5~6배, 부하 측정은 `info`), 실험 2(Nagle)도 완료(끄는 이득 없음, 켬 유지)이고 다음은 실험 3(스레드 수)(docs/stage3.md, results/stage3/). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
 - 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
-- **4단계(게임) 서버 최소 구현 완료(Windows)**: 방 만들기, 6자리 숫자 코드로 입장(최대 4명), 방장 변경, 빈 방 삭제, 서버 판정 이동(속도 300 cm/s, 맵 5,000 x 5,000 cm), 20Hz 방 전체 스냅샷. `ctest` 218개 통과(MySQL 11개 건너뜀). 값은 사용자가 정하지 않아 **임의 기본값**이며 `PlayConfig`에서 바꾼다. Unreal 쪽 연동은 다음 작업이다. 설계와 검증은 [docs/stage4.md](docs/stage4.md), Unreal용 프로토콜과 기준 바이트는 [docs/unreal-client.md](docs/unreal-client.md).
+- **4단계(게임) 서버 최소 구현 완료(Windows)**: 방 만들기, 6자리 숫자 코드로 입장(최대 4명), 방장 변경, 빈 방 삭제, 서버 판정 이동(속도 300 cm/s, 맵 5,000 x 5,000 cm), 20Hz 방 전체 스냅샷. `ctest` 218개 통과(MySQL 11개 건너뜀). 값은 사용자가 정하지 않아 **임의 기본값**이며 `PlayConfig`에서 바꾼다. **부하 측정 완료: 방 500개(플레이어 2,000명)까지 합격, 600개부터 불합격**(results/stage4/game-load.md, Windows 루프백 한 대). Unreal 쪽 연동은 다음 작업이다. 설계와 검증은 [docs/stage4.md](docs/stage4.md), Unreal용 프로토콜과 기준 바이트는 [docs/unreal-client.md](docs/unreal-client.md).
 - **Unreal 연동 스파이크 성공**: `D:\UnrealProjects\YongClient`(이 저장소와 별개)에서 서버에 접속해 Ping 5건 왕복을 확인했다(docs/unreal-client.md). 5.4.4에서 먼저 확인하고 **UE 5.8.4(`D:\UE_5.8`)로 올려 다시 통과**했다(5.4 시점 프로젝트는 `YongClient_UE54_backup`). 5.8은 MSVC 14.44가 선호 버전이라 5.4 때의 우회가 필요 없고, 타깃은 `BuildSettingsVersion.Latest`를 쓴다. 이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치다. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싸야 한다(점에서 쪼개짐).
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
@@ -154,6 +154,15 @@ build/windows-local/Release/game_client.exe --port 7777 --join <방코드> --nic
 
 명령: `/create <닉네임>`, `/join <방코드> <닉네임>`, `/leave`, `/move <dx> <dy>`(길이 1 이하 방향), `/stop`, `/snap <N>`(N틱마다 위치 출력, 0이면 끔), `/ping`, `/wait <밀리초>`, `/quit`, `/help`. 위치는 서버가 계산해 20Hz 스냅샷으로 보내며 클라이언트는 방향만 보낸다. 서버 로그는 `info`로 두면 방 생성/입장/퇴장/삭제만 남는다. 단위·통합 테스트는 `play_world_test`, `play_room_test`, `game_service_test`, `game_integration_test`다.
 
+### 게임 부하 측정 (4단계, game_load_client)
+
+```bash
+build/windows-local/Release/game_server.exe --port 7777 --log-level info --stats-interval 1                   # 터미널 1
+build/windows-local/Release/game_load_client.exe --port 7777 --rooms 100 --server-pid <서버PID> --label 이름 --csv results/stage4/raw/파일.csv   # 터미널 2
+```
+
+옵션: `--rooms`(방 수, 방마다 4명), `--input-rate`(플레이어당 초당 입력, 기본 10), `--warmup`, `--duration`, `--threads`(기본 4), `--server-pid`, `--csv`. 종료 코드 0=합격, 1=불합격, 3=생성기 포화. 서버의 틱 건너뜀은 서버 로그의 통계 줄(`건너뜀=`)을 측정 구간 시각(출력의 "측정 구간")으로 잘라 따로 본다. 합격 기준은 docs/stage4.md, 결과는 results/stage4/.
+
 ### 부하 측정 (3단계, Windows)
 
 ```bash
@@ -201,6 +210,7 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/play/room.h/.cpp`: 방 한 개의 인원, 방장, 닉네임, 시작 칸(slot). 소켓과 시간을 모른다
 - `src/play/game_service.h/.cpp`: 여러 방 관리, 6자리 숫자 코드 발급(충돌 재발급, 생성기 교체 가능), 입장/퇴장/방장 변경/알림, 고정 간격 틱(밀리면 최대 3틱 따라잡고 나머지는 건너뜀). 전송 중 연결이 닫혀도 안전하도록 틱은 "계산 -> 수신자 확보 -> 전송" 순서다. 연결은 기존 `chat::ChatClient` 인터페이스를 그대로 쓴다
 - `src/client/game_client.cpp`: 대화형 게임 클라이언트(수동 실험용)
+- `src/tools/game_load_client.cpp`: 4단계 게임 부하 생성기(방 R개 x 4명, 열린 루프 입력, 스냅샷 도착 간격/입력 반영 지연/누락/정합성 검사, 생성기 포화 감지)
 - `proto/ping.proto`, `proto/chat.proto`, `proto/game.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
 
 ### 서버 구현에서 정해 둔 것

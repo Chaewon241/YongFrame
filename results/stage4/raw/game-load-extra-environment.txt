@@ -1,0 +1,8 @@
+﻿OS: Microsoft Windows 11 Home 10.0.26200
+CPU: AMD Ryzen 5 5600 6-Core Processor (6코어/12스레드)
+RAM: 16 GB
+컴파일러: MSVC 14.44.35207 (VS 2022), 빌드: Release
+커밋: 57c2a1f (작업 폴더에 커밋되지 않은 변경 있음)
+서버: --log-level info --stats-interval 1, io_context 스레드 1개, TCP_NODELAY 켬, 저장소 메모리, PlayConfig 기본값(맵 5000x5000cm, 300cm/s, 20Hz, 방당 4명)
+부하 생성기: game_load_client --threads 4, 같은 PC 루프백, 방당 4명, 플레이어당 MoveInput 10Hz, 워밍업 5초, 측정 30초, 반영 대기 최대 3초
+측정 시작 시 실행 중인 배경 프로그램: chrome, Discord

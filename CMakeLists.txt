@@ -172,6 +172,14 @@ if(WIN32)
 endif()
 apply_project_options(load_client)
 
+# 게임 부하 생성기(4단계): 방 R개 x 4명이 입력을 보내고 20Hz 스냅샷을 받으며 지연, 누락, 정합성을 잰다.
+add_executable(game_load_client src/tools/game_load_client.cpp)
+target_link_libraries(game_load_client PRIVATE client_core)
+if(WIN32)
+  target_link_libraries(game_load_client PRIVATE psapi winmm)
+endif()
+apply_project_options(game_load_client)
+
 # MySQL 연결 확인 도구: 서버 설치와 계정 설정이 맞는지, 드라이버가 두 환경에서 빌드되는지 본다.
 add_executable(mysql_check src/tools/mysql_check.cpp)
 target_link_libraries(mysql_check PRIVATE Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
