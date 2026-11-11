@@ -1,16 +1,16 @@
 # Unreal 클라이언트 연동 (스파이크)
 
-> 상태: **스파이크 성공.** Unreal Engine 5.4.4 프로젝트가 이 서버에 TCP로 접속해 `PingRequest` 5건을 보내고 `PingResponse`를 받아 요청ID와 payload를 바이트 단위로 대조했다(분할 전송 1건, 한글 payload 1건 포함). 서버 로그도 프레임 5개 수신, 5개 송신으로 일치했다. 아직 게임 기능(방, 이동)은 없고, 에디터 화면(UI)에서의 확인도 하지 않았다. 이 문서는 프로토콜을 다른 클라이언트에서 구현하는 사람(그리고 이후의 나)을 위한 안내다.
+> 상태: **스파이크 성공.** Unreal Engine 5.4.4에서 먼저 확인했고, **5.8.4로 올린 뒤에도 같은 시험을 통과했다.** 프로젝트가 이 서버에 TCP로 접속해 `PingRequest` 5건을 보내고 `PingResponse`를 받아 요청ID와 payload를 바이트 단위로 대조했다(분할 전송 1건, 한글 payload 1건 포함). 서버 로그도 프레임 5개 수신, 5개 송신으로 일치했다. 아직 게임 기능(방, 이동)은 없고, 에디터 화면(UI)에서의 확인도 하지 않았다. 이 문서는 프로토콜을 다른 클라이언트에서 구현하는 사람(그리고 이후의 나)을 위한 안내다.
 
 ## 환경과 위치
 
 | 항목 | 값 |
 | --- | --- |
-| 엔진 | Unreal Engine 5.4.4 (`D:\UE_5.4`, 런처 설치본) |
+| 엔진 | **Unreal Engine 5.8.4** (`D:\UE_5.8`, 런처 설치본). 5.4.4(`D:\UE_5.4`)에서 먼저 시험했고, 그 시점의 프로젝트는 `D:\UnrealProjects\YongClient_UE54_backup`에 백업해 두었다 |
 | Unreal 프로젝트 | `D:\UnrealProjects\YongClient` (이 저장소와 별개. 경로에 한글이 있으면 Unreal 빌드가 깨질 수 있어 영문 경로에 둠) |
-| 컴파일러 | MSVC 14.44.35207 (VS 2022). Unreal이 선호하는 14.38이 이 PC에는 x64 라이브러리가 없는 불완전 설치라서 쓸 수 없고, Unreal은 "선호 버전이 아니다"라는 경고만 낸다 |
+| 컴파일러 | MSVC 14.44 (VS 2022). 5.8의 선호 버전이라 별도 우회 없이 빌드된다. (5.4는 14.38을 선호하는데 이 PC의 14.38은 x64 라이브러리가 없는 불완전 설치라서 14.44를 강제로 써야 했고 우회 코드가 필요했다) |
 | Protobuf | 서버와 **같은 6.33.4** (서버용 vcpkg 빌드의 헤더와 정적 라이브러리를 복사해 사용. 정적 라이브러리 + 동적 CRT(`/MD`)) |
-| 프로젝트 구성 | 모듈 `YongClient`(런타임), 커맨들릿 `PingSpikeCommandlet`(화면 없이 Ping 확인), 생성된 `ping.pb.*`, `chat.pb.*` |
+| 프로젝트 구성 | 모듈 `YongClient`(런타임), 커맨들릿 `PingSpikeCommandlet`(화면 없이 Ping 확인), 생성된 `ping.pb.*`, `chat.pb.*`. 타깃은 `DefaultBuildSettings = BuildSettingsVersion.Latest`를 써야 한다(`V5`로 두면 5.8의 공유 빌드 환경과 경고 수준이 달라 "UnrealEditor와 공통 빌드 산출물을 가진다" 오류로 빌드가 실패함) |
 
 ## 프로토콜 (docs/protocol.md가 기준)
 
@@ -45,10 +45,12 @@ Protobuf 본문은 `protoc --encode`로, 프레임은 위 형식대로 만든 �
 
 ## 겪은 문제
 
+5.8로 올리면서 **5.4 시절의 우회 중 세 가지(ASAN 정의, 공유 PCH 끄기, 컴파일러 버전 고정)를 뺐고 빌드가 통과했다.** 아래 표에서 "5.4만"이라고 적은 줄이 그것이다. 나머지(매크로 해제, `.pb.cc` 래퍼 분리, PowerShell 따옴표)는 5.8에서도 그대로 유지했고 필요 여부는 따로 시험하지 않았다.
+
 | 문제 | 원인 | 해결 |
 | --- | --- | --- |
-| vcpkg로 Unreal용 Protobuf를 MSVC 14.38/14.40으로 빌드하려 했더니 "Visual Studio 인스턴스를 찾을 수 없음" | 14.38은 `lib\x64`가 없는 불완전 설치. 14.40은 설치돼 있으나 vcpkg가 해당 툴셋 버전을 인식하지 못함(원인은 확인하지 못함) | 서버용으로 이미 빌드한 Protobuf(14.44)를 복사해 쓰고, Unreal도 14.44로 고정. 이후 링크까지 성공했다 |
-| Unreal 5.4 헤더가 컴파일 오류(`__has_feature`, C4668/C4067) | MSVC 14.44에 asan 헤더가 있어 UE의 `PLATFORM_HAS_ASAN_INCLUDE`가 켜지는데 MSVC에는 `__has_feature`가 없음 | 모듈 규칙에서 `PLATFORM_HAS_ASAN_INCLUDE=0`을 정의하고 공유 PCH를 쓰지 않음(`PCHUsage = NoPCHs`). 타깃 전체 정의는 `UnrealEditor`와 공유되어 바꿀 수 없다 |
+| **(5.4만)** vcpkg로 Unreal용 Protobuf를 MSVC 14.38/14.40으로 빌드하려 했더니 "Visual Studio 인스턴스를 찾을 수 없음" | 14.38은 `lib\x64`가 없는 불완전 설치. 14.40은 설치돼 있으나 vcpkg가 해당 툴셋 버전을 인식하지 못함(원인은 확인하지 못함) | 서버용으로 이미 빌드한 Protobuf(14.44)를 복사해 쓰고, Unreal도 14.44로 고정. 이후 링크까지 성공했다 |
+| **(5.4만)** Unreal 5.4 헤더가 컴파일 오류(`__has_feature`, C4668/C4067) | MSVC 14.44에 asan 헤더가 있어 UE의 `PLATFORM_HAS_ASAN_INCLUDE`가 켜지는데 MSVC에는 `__has_feature`가 없음 | 모듈 규칙에서 `PLATFORM_HAS_ASAN_INCLUDE=0`을 정의하고 공유 PCH를 쓰지 않음(`PCHUsage = NoPCHs`). 타깃 전체 정의는 `UnrealEditor`와 공유되어 바꿀 수 없다. 5.8에서는 제거 |
 | Abseil `btree.h`의 `verify()` 선언이 컴파일 오류 | Unreal이 `verify` 매크로를 정의 | Protobuf 포함 구간에서 `verify`, `check` 매크로 해제 |
 | 두 `.pb.cc`를 한 파일로 합치자 오류(`schemas` 재정의, init 세그먼트) | 생성 코드의 익명 이름공간과 `init_seg` | 파일마다 래퍼를 따로 둠 |
 | 커맨들릿이 `Assertion failed: GEngine && GEditor`로 종료 | 커맨들릿의 `IsEditor = false` 설정으로 엔진이 에디터 없이 초기화됨 | 기본값(`IsEditor = true`) 사용 |
@@ -65,7 +67,7 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 ```
 
 ```bash
-& 'D:\UE_5.4\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\UnrealProjects\YongClient\YongClient.uproject' '-run=PingSpike' '-host=127.0.0.1' '-port=17777' '-count=5' '-unattended' '-nullrhi' '-nosplash' '-stdout' '-FullStdOutLogOutput'
+& 'D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\UnrealProjects\YongClient\YongClient.uproject' '-run=PingSpike' '-host=127.0.0.1' '-port=17777' '-count=5' '-unattended' '-nullrhi' '-nosplash' '-stdout' '-FullStdOutLogOutput'
 ```
 
 `LogPingSpike`가 붙은 줄에 각 요청의 `OK`와 마지막 줄 "결과: 성공"이 나오고 종료 코드는 0이다. 한글은 콘솔 코드 페이지 때문에 `?`로 보일 수 있다(비교는 바이트로 하므로 결과에는 영향 없음). 서버 로그에는 `[요청] id=1 request_id=1000 …`이 찍힌다.
@@ -73,7 +75,7 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 빌드(코드를 고친 뒤):
 
 ```bash
-& 'D:\UE_5.4\Engine\Build\BatchFiles\Build.bat' YongClientEditor Win64 Development '-Project=D:\UnrealProjects\YongClient\YongClient.uproject' -WaitMutex
+& 'D:\UE_5.8\Engine\Build\BatchFiles\Build.bat' YongClientEditor Win64 Development '-Project=D:\UnrealProjects\YongClient\YongClient.uproject' -WaitMutex
 ```
 
 ### Unreal 에디터 / Visual Studio
@@ -82,8 +84,8 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 
 ## 한계
 
-- Unreal 에디터 타깃(`Development Editor`)만 빌드하고 시험했다. 게임 타깃(`Game`), Debug/Shipping 구성, 다른 플랫폼은 확인하지 않았다.
-- MSVC 14.44는 UE 5.4가 권장하지 않는 버전이다. 지금은 우회(위 표)로 빌드되지만 엔진 업데이트나 다른 모듈을 추가하면 같은 종류의 오류가 또 나올 수 있다. 정상 설치된 14.38로 바꾸려면 Visual Studio Installer에서 "MSVC v143 - VS 2022 C++ x64/x86 build tools (v14.38-17.8)"를 복구하고, Protobuf도 같은 버전으로 다시 빌드해야 한다(이번에는 하지 않았다).
+- Unreal 에디터 타깃(`Development Editor`)만 5.8에서 빌드하고 시험했다. 게임 타깃(`Game`), Debug/Shipping 구성, 다른 플랫폼은 확인하지 않았다.
+- 5.8과 MSVC 14.44 조합은 선호 구성이라 추가 우회가 필요 없었다. 5.4로 되돌려 쓸 경우 위 "5.4만" 우회가 다시 필요하다(백업 폴더에 그 버전이 있다).
 - 접속은 동기식 소켓으로 한 번에 끝내는 시험이다. 게임 틱 안에서 쓰려면 비동기(별도 스레드 또는 비차단 소켓)로 바꿔야 한다.
 - 채팅 메시지(`chat.pb.*`)는 컴파일만 되며 Unreal에서 보내 본 적은 없다.
 - `ThirdParty/Protobuf`(약 300 MB)는 이 PC에서만 복사해 둔 것이다. 다른 PC에서는 위 절차를 반복해야 한다.
