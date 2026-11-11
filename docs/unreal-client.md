@@ -82,6 +82,24 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 
 아직 에디터 화면에서의 확인은 하지 않았다. `YongClient.uproject`를 더블클릭하면 에디터가 열리고(처음에는 모듈을 빌드하겠냐고 물을 수 있음), 커맨들릿은 터미널에서만 실행한다. Visual Studio에서 열려면 `.uproject`를 우클릭해 "Generate Visual Studio project files"를 실행한다(이 PC에서는 아직 시도하지 않았다).
 
+## Unreal MCP (Epic 제공, 5.8)
+
+UE 5.8에는 Epic의 실험 기능 플러그인 `ModelContextProtocol`("Unreal MCP")과 `EditorToolset`이 들어 있다(`Engine\Plugins\Experimental`). 기본으로 꺼져 있고, 켜면 에디터가 HTTP로 MCP 서버를 연다. 이 프로젝트에서 켜서 서버 응답까지 확인했다.
+
+| 항목 | 값 |
+| --- | --- |
+| 켜는 곳 | `YongClient.uproject`의 `Plugins`에 `ModelContextProtocol`, `EditorToolset` |
+| 주소 | `http://127.0.0.1:8000/mcp` (`Config/DefaultEngine.ini`의 `[HTTPServer.Listeners] DefaultBindAddress=127.0.0.1`로 로컬에만 연다) |
+| 자동 시작 | `Config/DefaultEditorPerProjectUserSettings.ini`의 `bAutoStartServer=True`. 끄려면 `False` |
+| 설정 화면 | **편집 > 에디터 환경설정(Editor Preferences)** 에서 "Model Context Protocol"을 검색한다. 프로젝트 설정에는 없다(이 설정 클래스가 `EditorPerProjectUserSettings`라서 에디터 쪽에 표시됨) |
+| Claude Code 연결 | 프로젝트 폴더의 `.mcp.json`(`mcpServers.unreal-mcp`, `type: http`)을 Claude Code가 읽는다. 또는 `claude mcp add --transport http unreal-mcp http://127.0.0.1:8000/mcp` |
+| 설정 파일 생성 | 에디터 콘솔 명령 `ModelContextProtocol.GenerateClientConfig ClaudeCode`가 `.mcp.json`을 만든다(직접 쓴 것과 같은 형식) |
+
+기본 도구는 `list_toolsets`, `describe_toolset`, `call_tool` 세 개이고 나머지는 툴셋 이름으로 호출한다(`bEnableToolSearch`). `list_toolsets`로 확인한 툴셋은 에디터 상태(콘솔 변수, 선택, 카메라, 플레이 세션, 로그), 액터, 에셋, 블루프린트, 레벨, 데이터 테이블, 머티리얼, 메시, 텍스처, 오브젝트 프로퍼티, 그리고 호출을 묶는 샌드박스 파이썬 도구다. **쓰기 도구는 호출해 보지 않았다.**
+
+- **인증이 없다.** 플러그인은 DNS 리바인딩을 막는 Origin 검사만 한다. 로컬 주소로만 열어 두는 것이 유일한 방어이므로, 이 PC의 다른 프로그램은 이 포트로 에디터를 조작할 수 있다. 쓰지 않을 때는 에디터를 닫는다.
+- Epic의 실험 기능이라 도구 범위와 안정성은 써 보며 확인해야 한다.
+
 ## 한계
 
 - Unreal 에디터 타깃(`Development Editor`)만 5.8에서 빌드하고 시험했다. 게임 타깃(`Game`), Debug/Shipping 구성, 다른 플랫폼은 확인하지 않았다.
