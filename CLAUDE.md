@@ -6,6 +6,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 - 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준·확장 측정을 마쳤고(Active 4,000연결까지 합격, 서버 스레드 1개의 처리량 상한 관측 약 4.5만/s) 비교 실험 1(로그 레벨)도 완료(`debug`는 응답당 CPU 5~6배, 부하 측정은 `info`), 실험 2(Nagle)도 완료(끄는 이득 없음, 켬 유지)이고 다음은 실험 3(스레드 수)(docs/stage3.md, results/stage3/). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
 - 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
+- **4단계(게임) 서버 최소 구현 완료(Windows)**: 방 만들기, 6자리 숫자 코드로 입장(최대 4명), 방장 변경, 빈 방 삭제, 서버 판정 이동(속도 300 cm/s, 맵 5,000 x 5,000 cm), 20Hz 방 전체 스냅샷. `ctest` 218개 통과(MySQL 11개 건너뜀). 값은 사용자가 정하지 않아 **임의 기본값**이며 `PlayConfig`에서 바꾼다. Unreal 쪽 연동은 다음 작업이다. 설계와 검증은 [docs/stage4.md](docs/stage4.md), Unreal용 프로토콜과 기준 바이트는 [docs/unreal-client.md](docs/unreal-client.md).
 - **Unreal 연동 스파이크 성공**: `D:\UnrealProjects\YongClient`(이 저장소와 별개)에서 서버에 접속해 Ping 5건 왕복을 확인했다(docs/unreal-client.md). 5.4.4에서 먼저 확인하고 **UE 5.8.4(`D:\UE_5.8`)로 올려 다시 통과**했다(5.4 시점 프로젝트는 `YongClient_UE54_backup`). 5.8은 MSVC 14.44가 선호 버전이라 5.4 때의 우회가 필요 없고, 타깃은 `BuildSettingsVersion.Latest`를 쓴다. 이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치다. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싸야 한다(점에서 쪼개짐).
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
@@ -22,6 +23,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/stage2.md](docs/stage2.md) | 2단계 결정 기록, 작업 순서와 진행 상태, MySQL 준비 방법 |
 | [docs/stage3.md](docs/stage3.md) | 3단계 측정 계획과 합격 기준(측정 전 확정), 진행 상태, 측정 도구에서 겪은 문제 |
 | [docs/game-plan.md](docs/game-plan.md) | 4단계 게임 기획 초안(1~4인 협동 농장, Unreal 클라이언트), 서버 영향, 미정 사항 |
+| [docs/stage4.md](docs/stage4.md) | 4단계 게임 서버: 범위, 프로토콜(ID 100~111), 기본값, 완료 기준, 검증 결과, 겪은 문제, 제한 |
 | [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(5.4.4와 5.8.4에서 Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법, 겪은 문제, 확인 방법 |
 | [README.md](README.md) | 진입점. 위 문서 링크와 바로 시작할 작업 |
 
@@ -59,7 +61,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 1. 패킷 송수신 (Ping 왕복, 프레이밍, 오류 처리) ← Windows 기준 완료, Linux 확인 보류
 2. 채팅 + MySQL (방 단위 전파, 기록 저장·조회, DB 장애 시 동작) ← Windows 기준 완료
 3. 수용 규모와 병목 검증 (Idle/Active 워크로드 구분, p50/p95/p99, Windows·Linux 각각 측정) ← 진행 중 (기준 측정 완료)
-4. 게임 (서버가 상태와 판정을 소유. 사용자가 정한 기획은 1~4인 협동 농장 게임, 방 코드 입장, Unreal 클라이언트: docs/game-plan.md)
+4. 게임 (서버가 상태와 판정을 소유. 사용자가 정한 기획은 1~4인 협동 농장 게임, 방 코드 입장, Unreal 클라이언트: docs/game-plan.md) ← 서버 최소 구현 완료(Windows), Unreal 연동은 다음 (docs/stage4.md)
 
 ## 검증·기록 규칙
 
@@ -142,6 +144,16 @@ build/windows-local/Debug/chat_client.exe --port 7777 --nick bob              # 
 
 한 줄을 입력하면 채팅 메시지로 전송된다. 명령: `/join <닉네임>`, `/leave`, `/history [개수]`, `/ping`, `/wait <밀리초>`(스크립트용), `/quit`, `/help`. 같은 닉네임으로 입장하거나 입장 전에 채팅하면 거부 메시지가 나오는 것도 확인할 수 있다. `--nick`을 주면 접속 직후 자동 입장한다.
 
+### 게임 체험 (4단계, game_client)
+
+```bash
+build/windows-local/Release/game_server.exe --port 7777 --log-level info                  # 터미널 1
+build/windows-local/Release/game_client.exe --port 7777 --create --nick alice             # 터미널 2 (방 코드가 출력됨)
+build/windows-local/Release/game_client.exe --port 7777 --join <방코드> --nick bob        # 터미널 3
+```
+
+명령: `/create <닉네임>`, `/join <방코드> <닉네임>`, `/leave`, `/move <dx> <dy>`(길이 1 이하 방향), `/stop`, `/snap <N>`(N틱마다 위치 출력, 0이면 끔), `/ping`, `/wait <밀리초>`, `/quit`, `/help`. 위치는 서버가 계산해 20Hz 스냅샷으로 보내며 클라이언트는 방향만 보낸다. 서버 로그는 `info`로 두면 방 생성/입장/퇴장/삭제만 남는다. 단위·통합 테스트는 `play_world_test`, `play_room_test`, `game_service_test`, `game_integration_test`다.
+
 ### 부하 측정 (3단계, Windows)
 
 ```bash
@@ -184,13 +196,20 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
 - `tests/server_integration_test.cpp`: 서버(Ping) 통합 테스트. 결과는 서버 `Stats` 카운터와 클라이언트가 받은 응답으로 확인
 - `tests/chat_rules_test.cpp`, `chat_room_test.cpp`, `chat_integration_test.cpp`: 채팅 규칙/방 로직/통합 테스트. `tests/test_support.h`에 서버를 띄우는 `TestServer`(저장소 장애·지연 주입 가능, 다른 저장소도 주입 가능)와 `WaitUntil`이, `tests/chat_test_client.h`에 클라이언트 쪽 도우미(`Connect`, `JoinOk`, `SendChat` 등)가 있다. `tests/chat_mysql_test.cpp`는 MySQL 대상 테스트
-- `proto/ping.proto`, `proto/chat.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
+- `src/play/play_config.h`: 게임 규칙 기본값(맵, 속도, 인원, 틱, 방 수 상한). 한 곳에서만 바꾼다
+- `src/play/world.h/.cpp`: 한 방의 위치와 이동 계산(순수 계산, 서버 판정). 방향 길이는 `double` `hypot`으로 구해 1로 제한한다(`play_core` 라이브러리)
+- `src/play/room.h/.cpp`: 방 한 개의 인원, 방장, 닉네임, 시작 칸(slot). 소켓과 시간을 모른다
+- `src/play/game_service.h/.cpp`: 여러 방 관리, 6자리 숫자 코드 발급(충돌 재발급, 생성기 교체 가능), 입장/퇴장/방장 변경/알림, 고정 간격 틱(밀리면 최대 3틱 따라잡고 나머지는 건너뜀). 전송 중 연결이 닫혀도 안전하도록 틱은 "계산 -> 수신자 확보 -> 전송" 순서다. 연결은 기존 `chat::ChatClient` 인터페이스를 그대로 쓴다
+- `src/client/game_client.cpp`: 대화형 게임 클라이언트(수동 실험용)
+- `proto/ping.proto`, `proto/chat.proto`, `proto/game.proto` → `game_proto` 라이브러리 (빌드 시 코드 생성)
 
 ### 서버 구현에서 정해 둔 것
 
 - `io_context`는 스레드 1개로 돌린다. Session/Server는 스레드 안전하지 않고 단일 스레드 전제다. 스레드를 늘리는 실험(3단계)을 할 때는 소켓에 strand를 붙여 이 전제를 유지해야 한다.
 - 소켓은 `TCP_NODELAY`를 켠다(즉시 송신). 배치 송신은 3단계 비교 후보다.
 - 연결이 닫혀도 `Session::send_queue_`는 비우지 않는다. 진행 중인 `async_write`가 맨 앞 버퍼를 쓰는 동안 해제하면 안 되기 때문이다(IOCP는 취소 완료 전까지 버퍼를 쓸 수 있다).
+- 게임 틱(20Hz)은 `GameService`가 절대 시각 격자로 예약한다. 윈도우의 기본 타이머 해상도(약 15.6 ms)에서는 틱이 늦게 깨어나 몰아서 처리될 수 있어, 서버 `main`이 3단계 부하 생성기와 같은 방식으로 해상도를 1 ms로 올린다.
+- 사용자가 `game_server.exe`를 켜 둔 채면 같은 구성의 빌드가 `LNK1104`로 막힌다. 프로세스를 끄지 말고 실행 중인 파일의 이름만 바꾼 뒤(`game_server.old-running-2.exe` 등) 빌드한다.
 - 윈도우에서는 `SO_REUSEADDR`를 켜지 않는다(중복 바인드 허용 의미라 위험). 리눅스에서만 켠다.
 
 ### Linux (보류)

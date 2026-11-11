@@ -26,7 +26,8 @@ Server::Server(boost::asio::io_context& io, ServerConfig config,
       stats_timer_(io),
       repository_(repository ? std::move(repository)
                              : std::make_shared<chat::InMemoryChatRepository>(io)),
-      room_(std::make_unique<chat::ChatRoom>(io, repository_, config_.chat)) {
+      room_(std::make_unique<chat::ChatRoom>(io, repository_, config_.chat)),
+      game_(std::make_unique<play::GameService>(io, config_.play)) {
   // 주소 문자열("127.0.0.1" 등)을 해석한다. 형식이 틀리면 예외가 나간다.
   boost::system::error_code ec;
   const auto address = boost::asio::ip::make_address(config_.bind_address, ec);
@@ -52,6 +53,7 @@ void Server::Start() {
       " 송신큐한도=", config_.session.max_pending_send_bytes, "B",
       " nodelay=", config_.session.tcp_nodelay ? "on" : "off");
   DoAccept();
+  game_->StartTicking();
   if (config_.stats_interval_seconds > 0) {
     ScheduleStatsReport();
   }
@@ -81,7 +83,7 @@ void Server::OnAccept(const boost::system::error_code& ec, boost::asio::ip::tcp:
 
   const std::uint64_t id = next_session_id_++;
   auto session = std::make_shared<Session>(
-      std::move(socket), id, stats_, config_.session, *room_,
+      std::move(socket), id, stats_, config_.session, *room_, *game_,
       // 세션이 닫히면 이 콜백이 불려 목록에서 지운다. 지워도 핸들러가 shared_ptr을 쥐고 있어
       // 진행 중인 핸들러가 끝날 때까지 세션 객체는 살아 있다.
       [this](std::uint64_t closed_id) { sessions_.erase(closed_id); });
@@ -113,7 +115,9 @@ void Server::ScheduleStatsReport() {
   });
 }
 
-std::string Server::FullSummary() const { return stats_.Summary() + ' ' + room_->stats().Summary(); }
+std::string Server::FullSummary() const {
+  return stats_.Summary() + ' ' + room_->stats().Summary() + " 게임{" + game_->stats().Summary() + '}';
+}
 
 void Server::Stop() {
   if (stopped_) {
@@ -124,6 +128,7 @@ void Server::Stop() {
   // 채팅 방을 먼저 정리한다. 진행 중인 저장 대기를 취소하고, 이어서 연결을 닫을 때 "퇴장했다"는
   // 알림이 남은 연결들에게 쏟아지지 않게 한다.
   room_->Shutdown();
+  game_->Shutdown();
   Log(LogLevel::kInfo, "[서버] 종료 시작 (열린 연결 ", sessions_.size(), "개)");
 
   // 새 연결 받기를 멈춘다. 진행 중인 async_accept는 operation_aborted로 끝난다.

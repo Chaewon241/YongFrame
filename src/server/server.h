@@ -9,6 +9,7 @@
 //  4. 일정 주기로 통계 한 줄을 로그에 남긴다. (stats_interval_seconds)
 //  5. 채팅 방(ChatRoom) 하나와 그 방이 쓰는 저장소(ChatRepository)를 소유하고, 모든 Session이
 //     같은 방을 쓰게 한다. (지금은 단일 방)
+//  6. 게임 서비스(GameService)를 소유한다. 여러 게임 방과 고정 간격 틱을 관리하며 모든 Session이 공유한다.
 //
 // 스레드 규칙: Session과 마찬가지로 모든 핸들러가 같은 스레드에서 실행된다는 전제로 동작한다.
 // Stop()은 io_context를 돌리는 스레드에서 불러야 한다.
@@ -22,6 +23,7 @@
 
 #include "chat/chat_repository.h"
 #include "chat/chat_room.h"
+#include "play/game_service.h"
 #include "server/session.h"
 #include "server/stats.h"
 
@@ -33,6 +35,7 @@ struct ServerConfig {
   std::uint16_t port = 7777;  // 0이면 운영체제가 빈 포트를 골라 준다. 실제 값은 port()로 확인.
   SessionOptions session;
   chat::ChatRoomOptions chat;
+  play::PlayConfig play;
   std::uint32_t stats_interval_seconds = 10;  // 0이면 주기 통계 출력을 끈다.
 };
 
@@ -57,6 +60,8 @@ class Server {
 
   const Stats& stats() const { return stats_; }
   const chat::ChatStats& chat_stats() const { return room_->stats(); }
+  const play::GameStats& game_stats() const { return game_->stats(); }
+  play::GameService& game() { return *game_; }
 
   // 서버 통계와 채팅 통계를 한 줄로 합친 문자열. 주기 출력과 종료 시 출력에 쓴다.
   std::string FullSummary() const;
@@ -76,6 +81,7 @@ class Server {
   Stats stats_;
   std::shared_ptr<chat::ChatRepository> repository_;
   std::unique_ptr<chat::ChatRoom> room_;
+  std::unique_ptr<play::GameService> game_;
   std::uint64_t next_session_id_ = 1;
   // 살아 있는 세션들. 키는 연결 번호. Session이 닫힐 때 콜백으로 여기서 지워진다.
   std::unordered_map<std::uint64_t, std::shared_ptr<Session>> sessions_;

@@ -6,6 +6,8 @@ Boost.Asio 기반 C++ 게임 서버를 작은 기능부터 만들고, 각 단계
 
 > 진행 중: **2. 채팅과 MySQL**. 인메모리 채팅(입장/퇴장/전파/기록 조회)을 구현했고 DB가 필요 없는 테스트 110개가 통과합니다. MySQL 저장소(`--storage mysql`)와 마이그레이션 도구를 구현했고, 실제 MySQL 대상 테스트 13개가 통과했습니다(2단계는 Windows 기준 완료). 3단계는 기준 측정과 확장 측정을 마쳤습니다(Active 4,000연결, 초당 4만 건까지 합격 기준 통과). 자세한 내용은 [docs/stage2.md](docs/stage2.md), [docs/stage3.md](docs/stage3.md)입니다.
 
+> 4단계(게임): 서버의 최소 구현(방 코드 입장, 서버 판정 이동, 20Hz 스냅샷)을 완료했습니다. Unreal 클라이언트 연동은 다음 작업입니다. [docs/stage4.md](docs/stage4.md).
+
 ## 문서 안내
 
 | 문서 | 내용 |
@@ -18,6 +20,7 @@ Boost.Asio 기반 C++ 게임 서버를 작은 기능부터 만들고, 각 단계
 | [docs/protocol-chat.md](docs/protocol-chat.md) | 2단계 채팅 프로토콜 (초안) |
 | [docs/stage3.md](docs/stage3.md) | 3단계 측정 계획과 합격 기준, 진행 상태 |
 | [docs/game-plan.md](docs/game-plan.md) | 4단계 게임 기획 초안과 서버 영향 |
+| [docs/stage4.md](docs/stage4.md) | 4단계 게임 서버: 범위, 프로토콜, 기본값, 완료 기준, 검증 결과 |
 | [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법 |
 | [CLAUDE.md](CLAUDE.md) | 개발 규칙과 확인된 빌드·실행 명령 (작업 도구용 안내) |
 
@@ -31,7 +34,15 @@ build\windows-local\Debug\ping_client.exe --port 7777 --count 5
 build\windows-local\Debug\server_integration_test.exe
 ```
 
-채팅은 터미널을 여러 개 열어 직접 체험할 수 있습니다.
+게임(방 코드로 입장해 서로의 이동을 보기)과 채팅은 터미널을 여러 개 열어 직접 체험할 수 있습니다.
+
+```bash
+build\windows-local\Release\game_server.exe --port 7777 --log-level info
+build\windows-local\Release\game_client.exe --port 7777 --create --nick alice
+build\windows-local\Release\game_client.exe --port 7777 --join <출력된 방 코드> --nick bob
+```
+
+채팅:
 
 ```bash
 build\windows-local\Debug\game_server.exe --port 7777
@@ -41,7 +52,8 @@ build\windows-local\Debug\chat_client.exe --port 7777 --nick bob
 
 ## 남은 작업
 
-1. 3단계: 비교 실험(로그 레벨, Nagle, 스레드 수)을 한다([docs/stage3.md](docs/stage3.md)).
-2. (보류) VM에서 Linux 빌드와 테스트를 확인하고 [docs/stage1.md](docs/stage1.md)를 갱신한다.
+1. 4단계: Unreal 클라이언트에서 게임 메시지(방 만들기/입장/이동/스냅샷)를 연동한다([docs/unreal-client.md](docs/unreal-client.md)).
+2. 3단계: 비교 실험 3(스레드 수)과 게임 워크로드 측정을 한다([docs/stage3.md](docs/stage3.md)).
+3. (보류) VM에서 Linux 빌드와 테스트를 확인하고 [docs/stage1.md](docs/stage1.md)를 갱신한다.
 
 단계의 순서와 범위는 실험 결과에 따라 바꿀 수 있습니다.

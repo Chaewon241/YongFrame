@@ -80,6 +80,7 @@ class TestServer {
   std::uint16_t port() const { return server_.port(); }
   const server::Stats& stats() const { return server_.stats(); }
   const chat::ChatStats& chat_stats() const { return server_.chat_stats(); }
+  const play::GameStats& game_stats() const { return server_.game_stats(); }
 
   // 인메모리 저장소에 장애(SetFailing)나 지연(SetDelay)을 주입할 때 쓴다. 다른 저장소를 넘겼다면 쓸 수 없다.
   chat::InMemoryChatRepository& repository() {

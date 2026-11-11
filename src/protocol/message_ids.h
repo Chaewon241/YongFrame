@@ -21,6 +21,17 @@ enum class MessageId : std::uint16_t {
   kHistoryRequest = 30,
   kHistoryResponse = 31,
   kPresenceNotice = 40,
+
+  // 4단계 게임 (docs/stage4.md)
+  kCreateRoomRequest = 100,
+  kCreateRoomResponse = 101,
+  kJoinRoomRequest = 102,
+  kJoinRoomResponse = 103,
+  kLeaveRoomRequest = 104,
+  kLeaveRoomResponse = 105,
+  kMoveInput = 106,  // 응답 없음
+  kRoomEvent = 110,
+  kWorldSnapshot = 111,
 };
 
 // enum class는 정수로 자동 변환되지 않으므로, 프레임의 message_id(uint16_t)와 비교할 때 쓴다.
@@ -41,6 +52,15 @@ inline constexpr bool IsKnownMessageId(std::uint16_t id) {
     case MessageId::kHistoryRequest:
     case MessageId::kHistoryResponse:
     case MessageId::kPresenceNotice:
+    case MessageId::kCreateRoomRequest:
+    case MessageId::kCreateRoomResponse:
+    case MessageId::kJoinRoomRequest:
+    case MessageId::kJoinRoomResponse:
+    case MessageId::kLeaveRoomRequest:
+    case MessageId::kLeaveRoomResponse:
+    case MessageId::kMoveInput:
+    case MessageId::kRoomEvent:
+    case MessageId::kWorldSnapshot:
       return true;
   }
   return false;
@@ -55,6 +75,10 @@ inline constexpr bool IsClientRequestId(std::uint16_t id) {
     case MessageId::kLeaveRequest:
     case MessageId::kChatRequest:
     case MessageId::kHistoryRequest:
+    case MessageId::kCreateRoomRequest:
+    case MessageId::kJoinRoomRequest:
+    case MessageId::kLeaveRoomRequest:
+    case MessageId::kMoveInput:
       return true;
     default:
       return false;

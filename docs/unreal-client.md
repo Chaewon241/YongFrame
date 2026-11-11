@@ -82,6 +82,52 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 
 아직 에디터 화면에서의 확인은 하지 않았다. `YongClient.uproject`를 더블클릭하면 에디터가 열리고(처음에는 모듈을 빌드하겠냐고 물을 수 있음), 커맨들릿은 터미널에서만 실행한다. Visual Studio에서 열려면 `.uproject`를 우클릭해 "Generate Visual Studio project files"를 실행한다(이 PC에서는 아직 시도하지 않았다).
 
+## 4단계 게임 프로토콜 (Unreal 구현용)
+
+서버가 지원하는 게임 메시지다(자세한 규칙은 [stage4.md](stage4.md), 정의는 `proto/game.proto`). 프레임 형식은 위와 같다. 같은 연결에서 응답, 스냅샷(초당 20개), 방 알림이 섞여 오므로 `message_id`로 구분해야 한다.
+
+| ID | 메시지 | 방향 |
+| ---: | --- | --- |
+| 100 / 101 | `CreateRoomRequest{nickname}` / `CreateRoomResponse{result, state}` | C→S / S→C |
+| 102 / 103 | `JoinRoomRequest{room_code, nickname}` / `JoinRoomResponse{result, state}` | C→S / S→C |
+| 104 / 105 | `LeaveRoomRequest{}` / `LeaveRoomResponse{result}` | C→S / S→C |
+| 106 | `MoveInput{sequence, dir_x, dir_y}` (응답 없음) | C→S |
+| 110 | `RoomEvent{kind, player, host_player_id}` | S→C |
+| 111 | `WorldSnapshot{tick, players[{player_id, x, y, last_input_seq}]}` | S→C |
+
+- 방 코드는 숫자 6자리 **문자열**이다(`"000042"`처럼 앞자리가 0일 수 있다). 정수로 바꾸지 않는다.
+- 위치 단위는 센티미터(Unreal과 같음), 맵은 5,000 x 5,000 cm이고 원점은 한쪽 모서리다. 이동 속도 300 cm/s, 최대 4명, 틱 20 Hz는 **임의로 정한 기본값**이다(`PlayConfig`).
+- 클라이언트는 이동 **방향**(길이 1 이하)과 증가하는 `sequence`만 보낸다. 위치는 서버가 계산한 스냅샷을 그린다. 정지는 방향 (0, 0)을 보낸다. 서버는 다음 입력이 올 때까지 마지막 방향으로 계속 움직인다.
+- `last_input_seq`는 서버가 마지막으로 반영한 이 플레이어의 입력 번호다. 나중에 클라이언트 예측과 보정에 쓸 수 있다.
+- 규칙 위반(잘못된 코드, 가득 참 등)은 응답의 `result`로 알리고 연결은 유지한다.
+
+### 기준 바이트 (Unreal 인코더 시험용, `protoc --encode`로 만든 값)
+
+| 내용 | 프레임 전체 (16진수) |
+| --- | --- |
+| `CreateRoomRequest{nickname="alice"}` | `00 00 00 09` `00 64` `0A 05 61 6C 69 63 65` |
+| `JoinRoomRequest{room_code="000042", nickname="bob"}` | `00 00 00 0F` `00 66` `0A 06 30 30 30 30 34 32 12 03 62 6F 62` |
+| `LeaveRoomRequest{}` | `00 00 00 02` `00 68` (본문 없음) |
+| `MoveInput{sequence=1, dir_x=1.0, dir_y=0}` | `00 00 00 09` `00 6A` `08 01 15 00 00 80 3F` (`dir_y`가 0이면 필드를 생략) |
+| `MoveInput{sequence=2, dir_x=0.5, dir_y=-1.0}` | `00 00 00 0E` `00 6A` `08 02 15 00 00 00 3F 1D 00 00 80 BF` |
+| `CreateRoomResponse{OK, state{room_code="000042", your=1, host=1, players=[1:"alice"]}}` | `00 00 00 1B` `00 65` `12 17 0A 06 30 30 30 30 34 32 10 01 18 01 22 09 08 01 12 05 61 6C 69 63 65` (`result`가 OK(0)이면 필드를 생략) |
+
+`float`은 Protobuf가 4바이트 little-endian으로 인코딩한다(`1.0` = `00 00 80 3F`). 프레임 헤더(길이, ID)는 big-endian이다.
+
+### 터미널로 같은 것을 먼저 해 보기
+
+Unreal 없이 서버를 확인하는 터미널 클라이언트가 있다(`game_client`).
+
+```bash
+build\windows-local\Release\game_server.exe --port 7777 --log-level info
+```
+
+```bash
+build\windows-local\Release\game_client.exe --port 7777 --create --nick alice
+```
+
+방 코드가 출력되면 다른 터미널에서 `game_client.exe --port 7777 --join <코드> --nick bob`으로 입장하고, `/move 1 0`, `/stop`, `/leave`, `/help`를 써 본다.
+
 ## Unreal MCP (Epic 제공, 5.8)
 
 UE 5.8에는 Epic의 실험 기능 플러그인 `ModelContextProtocol`("Unreal MCP")과 `EditorToolset`이 들어 있다(`Engine\Plugins\Experimental`). 기본으로 꺼져 있고, 켜면 에디터가 HTTP로 MCP 서버를 연다. 이 프로젝트에서 켜서 서버 응답까지 확인했다.

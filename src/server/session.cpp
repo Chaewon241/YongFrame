@@ -76,12 +76,14 @@ std::string DescribeError(const boost::system::error_code& ec) {
 }  // namespace
 
 Session::Session(boost::asio::ip::tcp::socket socket, std::uint64_t id, Stats& stats,
-                 const SessionOptions& options, chat::ChatRoom& room, CloseCallback on_close)
+                 const SessionOptions& options, chat::ChatRoom& room, play::GameService& game,
+                 CloseCallback on_close)
     : socket_(std::move(socket)),
       id_(id),
       stats_(stats),
       options_(options),
       room_(room),
+      game_(game),
       on_close_(std::move(on_close)) {}
 
 // 연결이 시작될 때 한 번 호출된다. 상대 주소를 기록하고, 소켓 옵션을 설정하고, 통계를 올린 뒤
@@ -173,18 +175,27 @@ void Session::ProcessFrames() {
   }
 }
 
-// 프레임의 메시지 ID를 보고 처리 함수로 보낸다. 서버가 요청으로 받는 ID는 Ping, 입장, 퇴장, 채팅,
-// 기록 조회 다섯 가지뿐이다. 알 수 없는 ID뿐 아니라 서버가 보내는 쪽 메시지(PingResponse,
-// ChatBroadcast 등)가 들어와도 규약 위반으로 보고 연결을 닫는다.
+// 프레임의 메시지 ID를 보고 처리 함수로 보낸다. 서버가 요청으로 받는 ID는 Ping, 채팅(입장, 퇴장, 채팅, 기록
+// 조회), 게임(방 만들기, 방 입장, 방 나가기, 이동 입력)뿐이다. 알 수 없는 ID뿐 아니라 서버가 보내는 쪽
+// 메시지(PingResponse, ChatBroadcast, WorldSnapshot 등)가 들어와도 규약 위반으로 보고 연결을 닫는다.
 void Session::HandleFrame(const protocol::Frame& frame) {
   if (!protocol::IsClientRequestId(frame.message_id)) {
     Close(CloseReason::kUnknownMessageId, "message_id=" + std::to_string(frame.message_id));
     return;
   }
-  if (frame.message_id == protocol::ToUint16(protocol::MessageId::kPingRequest)) {
-    HandlePing(frame);
-  } else {
-    HandleChatFrame(frame);
+  switch (static_cast<protocol::MessageId>(frame.message_id)) {
+    case protocol::MessageId::kPingRequest:
+      HandlePing(frame);
+      return;
+    case protocol::MessageId::kCreateRoomRequest:
+    case protocol::MessageId::kJoinRoomRequest:
+    case protocol::MessageId::kLeaveRoomRequest:
+    case protocol::MessageId::kMoveInput:
+      HandleGameFrame(frame);
+      return;
+    default:
+      HandleChatFrame(frame);
+      return;
   }
 }
 
@@ -233,6 +244,50 @@ void Session::HandleChatFrame(const protocol::Frame& frame) {
       break;  // IsClientRequestId가 걸러 주므로 여기 오지 않는다.
   }
   Close(CloseReason::kInternalError, "처리되지 않는 요청 ID " + std::to_string(frame.message_id));
+}
+
+// 방 만들기/입장/나가기/이동 입력을 파싱해 게임 서비스에 넘긴다. 파싱에 실패하면 프로토콜 위반이라
+// 연결을 닫는다. 규칙 위반(잘못된 코드, 가득 참 등)은 서비스가 결과 코드가 담긴 응답을 돌려주고 연결은
+// 유지한다. 이동 입력은 초당 수십 번 오므로 로그를 남기지 않는다.
+void Session::HandleGameFrame(const protocol::Frame& frame) {
+  const std::shared_ptr<chat::ChatClient> self = shared_from_this();
+
+  switch (static_cast<protocol::MessageId>(frame.message_id)) {
+    case protocol::MessageId::kCreateRoomRequest: {
+      game::protocol::CreateRoomRequest request;
+      if (ParsePayload(frame, request, "CreateRoomRequest")) {
+        Log(LogLevel::kDebug, "[방만들기요청] id=", id_);
+        game_.HandleCreateRoom(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kJoinRoomRequest: {
+      game::protocol::JoinRoomRequest request;
+      if (ParsePayload(frame, request, "JoinRoomRequest")) {
+        Log(LogLevel::kDebug, "[방입장요청] id=", id_);
+        game_.HandleJoinRoom(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kLeaveRoomRequest: {
+      game::protocol::LeaveRoomRequest request;
+      if (ParsePayload(frame, request, "LeaveRoomRequest")) {
+        Log(LogLevel::kDebug, "[방나가기요청] id=", id_);
+        game_.HandleLeaveRoom(self);
+      }
+      return;
+    }
+    case protocol::MessageId::kMoveInput: {
+      game::protocol::MoveInput input;
+      if (ParsePayload(frame, input, "MoveInput")) {
+        game_.HandleMoveInput(self, input);
+      }
+      return;
+    }
+    default:
+      break;  // HandleFrame이 걸러 주므로 여기 오지 않는다.
+  }
+  Close(CloseReason::kInternalError, "처리되지 않는 게임 요청 ID " + std::to_string(frame.message_id));
 }
 
 // 프레임 본문(payload)을 message로 파싱한다. 실패하면 연결을 닫고 false.
@@ -365,7 +420,9 @@ void Session::Close(CloseReason reason, std::string_view detail) {
   closed_ = true;
 
   // 입장해 있었다면 방에서 빼고 남은 사람에게 알린다. (입장하지 않았다면 방이 아무것도 하지 않는다)
+  // 채팅 방과 게임 방 모두 같은 규칙이다.
   room_.OnDisconnect(id_);
+  game_.OnDisconnect(id_);
 
   CountClose(stats_, reason);
   const std::uint64_t remaining = --stats_.current_connections;

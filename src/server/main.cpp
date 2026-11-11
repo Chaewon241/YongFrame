@@ -12,6 +12,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <timeapi.h>  // timeBeginPeriod: 윈도우 타이머 해상도 조정
 #endif
 
 #include <cstdlib>
@@ -166,6 +167,16 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
   // 윈도우 콘솔은 기본 코드페이지가 UTF-8이 아니라서 한글 로그가 깨진다. 출력만 UTF-8로 맞춘다.
   SetConsoleOutputCP(CP_UTF8);
+
+  // 게임 틱(기본 20Hz = 50 ms 간격)이 윈도우의 기본 타이머 해상도(약 15.6 ms) 때문에 흔들리지 않도록 해상도를
+  // 1 ms로 올린다. 3단계 부하 생성기에서 같은 문제를 겪어 고친 방식이다(docs/stage3.md). 윈도우 11이 창 없는
+  // 프로세스의 해상도 요청을 무시하지 않도록 프로세스를 명시적으로 제외한다. (Linux는 필요 없다)
+  timeBeginPeriod(1);
+  PROCESS_POWER_THROTTLING_STATE throttling{};
+  throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+  throttling.ControlMask = PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+  throttling.StateMask = 0;
+  SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof(throttling));
 #endif
 
   game::server::ServerConfig config;

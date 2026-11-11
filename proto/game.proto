@@ -1,0 +1,81 @@
+// 4단계 게임 메시지. 규칙과 처리 순서는 docs/stage4.md가 기준이다.
+syntax = "proto3";
+package game.protocol;
+
+// 업무 규칙 위반을 알리는 결과 코드. 프로토콜 위반(잘못된 길이, 알 수 없는 ID, 파싱 실패)은
+// 이 코드를 쓰지 않고 연결을 종료한다.
+enum GameResult {
+  GAME_OK = 0;
+  GAME_INVALID_NICKNAME = 1;   // 닉네임 규칙 위반 (채팅과 같은 규칙)
+  GAME_INVALID_ROOM_CODE = 2;  // 방 코드가 숫자 6자리가 아님
+  GAME_ROOM_NOT_FOUND = 3;     // 그 코드의 방이 없음
+  GAME_ROOM_FULL = 4;          // 방이 가득 참 (최대 4명)
+  GAME_ALREADY_IN_ROOM = 5;    // 이미 방에 있는 연결이 만들기/입장
+  GAME_NOT_IN_ROOM = 6;        // 방에 없는 연결이 나가기
+  GAME_NICKNAME_TAKEN = 7;     // 같은 방에 같은 닉네임이 이미 있음
+  GAME_SERVER_BUSY = 8;        // 방 수 상한, 방 코드 발급 실패
+}
+
+message PlayerInfo {
+  uint32 player_id = 1;  // 방 안에서 부여한 번호. 방이 닫힐 때까지 유지, 재사용 안 함
+  string nickname = 2;
+}
+
+// 방 전체의 현재 상태. 만들기/입장 응답에 담긴다.
+message RoomState {
+  string room_code = 1;          // 숫자 6자리 문자열 (앞자리가 0일 수 있음)
+  uint32 your_player_id = 2;
+  uint32 host_player_id = 3;
+  repeated PlayerInfo players = 4;  // 나를 포함한 현재 접속자 (입장한 순서)
+}
+
+message CreateRoomRequest { string nickname = 1; }
+message CreateRoomResponse {
+  GameResult result = 1;
+  RoomState state = 2;  // result가 GAME_OK일 때만 채워진다
+}
+
+message JoinRoomRequest {
+  string room_code = 1;
+  string nickname = 2;
+}
+message JoinRoomResponse {
+  GameResult result = 1;
+  RoomState state = 2;  // result가 GAME_OK일 때만 채워진다
+}
+
+message LeaveRoomRequest {}
+message LeaveRoomResponse { GameResult result = 1; }
+
+// 이동 입력. 응답은 없다. 방향은 월드 좌표축 기준이며 길이가 1을 넘으면 서버가 1로 줄인다.
+// (0, 0)을 보내면 정지한다. 서버는 다음 입력이 올 때까지 마지막 방향으로 계속 움직인다.
+message MoveInput {
+  uint32 sequence = 1;  // 클라이언트가 올리는 번호. 이전 값 이하이면 서버가 무시한다.
+  float dir_x = 2;
+  float dir_y = 3;
+}
+
+// 방 안의 변화를 알린다.
+message RoomEvent {
+  enum Kind {
+    PLAYER_JOINED = 0;  // player에 입장한 사람
+    PLAYER_LEFT = 1;    // player에 나간 사람
+    HOST_CHANGED = 2;   // host_player_id가 새 방장
+  }
+  Kind kind = 1;
+  PlayerInfo player = 2;
+  uint32 host_player_id = 3;  // 항상 채워진다(현재 방장)
+}
+
+message PlayerState {
+  uint32 player_id = 1;
+  float x = 2;                   // cm
+  float y = 3;                   // cm
+  uint32 last_input_seq = 4;     // 서버가 마지막으로 반영한 이 플레이어의 입력 번호 (없으면 0)
+}
+
+// 틱마다 방 전체 상태를 보낸다.
+message WorldSnapshot {
+  uint64 tick = 1;
+  repeated PlayerState players = 2;
+}

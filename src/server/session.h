@@ -7,7 +7,8 @@
 //   소켓에서 바이트 읽기 (DoRead / OnRead)
 //     -> FrameDecoder에 넣어 프레임으로 자르기 (ProcessFrames)
 //       -> 메시지 ID에 따라 처리 (HandleFrame)
-//            Ping은 직접 처리하고, 입장/퇴장/채팅/기록 요청은 파싱한 뒤 채팅 방(ChatRoom)에 넘긴다
+//            Ping은 직접 처리하고, 입장/퇴장/채팅/기록 요청은 파싱한 뒤 채팅 방(ChatRoom)에,
+//            방 만들기/입장/나가기/이동 입력은 파싱한 뒤 게임 서비스(GameService)에 넘긴다
 //         -> 응답을 송신 큐에 넣기 (SendMessage -> Send)
 //           -> 큐에서 하나씩 꺼내 소켓에 쓰기 (DoWrite / OnWrite)
 //
@@ -35,6 +36,7 @@
 
 #include "chat/chat_client.h"
 #include "chat/chat_room.h"
+#include "play/game_service.h"
 #include "protocol/frame.h"
 #include "protocol/message_ids.h"
 #include "server/stats.h"
@@ -75,8 +77,10 @@ class Session : public std::enable_shared_from_this<Session>, public chat::ChatC
   // id:     서버가 부여한 연결 번호. 로그에서 연결을 구분하는 용도.
   // stats:  서버 전체 통계. 서버보다 오래 살지 않는다는 전제로 참조만 저장한다.
   // room:   이 연결이 속할 수 있는 채팅 방. 서버가 소유하며 세션보다 오래 산다.
+  // game:   이 연결이 들어갈 수 있는 게임 방들을 관리하는 서비스. 서버가 소유하며 세션보다 오래 산다.
   Session(boost::asio::ip::tcp::socket socket, std::uint64_t id, Stats& stats,
-          const SessionOptions& options, chat::ChatRoom& room, CloseCallback on_close);
+          const SessionOptions& options, chat::ChatRoom& room, play::GameService& game,
+          CloseCallback on_close);
 
   // 통계와 로그를 갱신하고 첫 읽기를 시작한다. shared_ptr로 만든 뒤에 호출해야 한다.
   void Start();
@@ -101,6 +105,7 @@ class Session : public std::enable_shared_from_this<Session>, public chat::ChatC
   void HandleFrame(const protocol::Frame& frame);
   void HandlePing(const protocol::Frame& frame);
   void HandleChatFrame(const protocol::Frame& frame);
+  void HandleGameFrame(const protocol::Frame& frame);
 
   // 프레임 본문을 message로 파싱한다. 실패하면 연결을 닫고(kParseError) false를 돌려준다.
   bool ParsePayload(const protocol::Frame& frame, google::protobuf::MessageLite& message, const char* name);
@@ -120,6 +125,7 @@ class Session : public std::enable_shared_from_this<Session>, public chat::ChatC
   Stats& stats_;
   const SessionOptions options_;
   chat::ChatRoom& room_;
+  play::GameService& game_;
   CloseCallback on_close_;
   std::string remote_;  // "ip:port" 형태의 상대 주소. 로그용.
 

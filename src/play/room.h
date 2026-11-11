@@ -1,0 +1,66 @@
+#pragma once
+
+// Room: 게임 방 하나의 인원, 방장, 닉네임, 월드(위치)를 관리한다. 소켓과 시간을 모르는 순수 로직이다.
+//
+// 연결은 client_id(번호)로만 구분한다. 실제 연결 객체와 메시지 전송은 GameService가 맡는다.
+// 방 안에서의 사람은 player_id로 구분한다. player_id는 방이 닫힐 때까지 재사용하지 않는다.
+
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "play/play_config.h"
+#include "play/world.h"
+
+namespace game::play {
+
+struct Member {
+  std::uint64_t client_id = 0;
+  std::uint32_t player_id = 0;
+  std::string nickname;
+  std::uint32_t slot = 0;  // 시작 위치를 정하는 칸 번호. 나가면 비워 다음 사람이 쓴다.
+};
+
+class Room {
+ public:
+  Room(std::string code, const PlayConfig& config);
+
+  const std::string& code() const { return code_; }
+  bool Full() const { return members_.size() >= config_.max_players; }
+  bool Empty() const { return members_.empty(); }
+
+  bool HasNickname(std::string_view nickname) const;
+  const Member* FindByClient(std::uint64_t client_id) const;
+  const Member* FindByPlayer(std::uint32_t player_id) const;
+
+  // 사람을 방에 넣고 새 player_id를 돌려준다. 가득 찼는지는 호출한 쪽이 먼저 확인한다(Full()).
+  // 첫 사람이 방장이 된다.
+  std::uint32_t AddMember(std::uint64_t client_id, std::string nickname);
+
+  struct RemoveResult {
+    bool removed = false;       // 방에 있던 사람이었는가
+    Member member;              // 나간 사람 (removed가 true일 때만 유효)
+    bool host_changed = false;  // 나간 사람이 방장이었고 남은 사람이 있어 방장이 바뀜
+  };
+  // 사람을 방에서 뺀다. 방장이 나갔고 남은 사람이 있으면, 먼저 들어온 순서로 다음 사람이 방장이 된다.
+  RemoveResult RemoveMember(std::uint64_t client_id);
+
+  std::uint32_t host_player_id() const { return host_player_id_; }
+  const std::vector<Member>& members() const { return members_; }  // 입장한 순서
+
+  World& world() { return world_; }
+  const World& world() const { return world_; }
+
+ private:
+  std::uint32_t LowestFreeSlot() const;
+
+  const std::string code_;
+  const PlayConfig config_;
+  std::vector<Member> members_;
+  std::uint32_t next_player_id_ = 1;
+  std::uint32_t host_player_id_ = 0;  // 0이면 방장 없음(빈 방)
+  World world_;
+};
+
+}  // namespace game::play

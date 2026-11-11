@@ -28,7 +28,7 @@ function(apply_project_options target)
 endfunction()
 
 # proto/*.proto -> 빌드 디렉터리의 생성 코드. 서버와 테스트 클라이언트가 같은 라이브러리를 쓴다.
-add_library(game_proto STATIC proto/ping.proto proto/chat.proto)
+add_library(game_proto STATIC proto/ping.proto proto/chat.proto proto/game.proto)
 target_link_libraries(game_proto PUBLIC protobuf::libprotobuf)
 target_include_directories(game_proto PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
 protobuf_generate(
@@ -74,6 +74,27 @@ target_link_libraries(chat_room_test PRIVATE chat_core GTest::gtest_main)
 apply_project_options(chat_room_test)
 gtest_discover_tests(chat_room_test)
 
+# 게임 로직(4단계): 월드(이동 계산), 방, 방 관리와 틱. 소켓을 모르므로 가짜 연결로 단위 테스트할 수 있다.
+add_library(play_core STATIC src/play/world.cpp src/play/room.cpp src/play/game_service.cpp)
+target_include_directories(play_core PUBLIC src)
+target_link_libraries(play_core PUBLIC chat_core game_proto Boost::headers Threads::Threads)
+apply_project_options(play_core)
+
+add_executable(play_world_test tests/play_world_test.cpp)
+target_link_libraries(play_world_test PRIVATE play_core GTest::gtest_main)
+apply_project_options(play_world_test)
+gtest_discover_tests(play_world_test)
+
+add_executable(play_room_test tests/play_room_test.cpp)
+target_link_libraries(play_room_test PRIVATE play_core GTest::gtest_main)
+apply_project_options(play_room_test)
+gtest_discover_tests(play_room_test)
+
+add_executable(game_service_test tests/game_service_test.cpp)
+target_link_libraries(game_service_test PRIVATE play_core GTest::gtest_main)
+apply_project_options(game_service_test)
+gtest_discover_tests(game_service_test)
+
 # MySQL 저장소: Boost.MySQL(비동기, 코루틴)로 ChatRepository를 구현한다. OpenSSL 의존성을 이 라이브러리에 가둔다.
 add_library(chat_mysql STATIC src/chat/mysql_chat_repository.cpp)
 target_include_directories(chat_mysql PUBLIC src)
@@ -87,7 +108,7 @@ apply_project_options(chat_mysql)
 # 나중에 통합 테스트가 같은 코드를 그대로 링크할 수 있다.
 add_library(server_core STATIC src/server/session.cpp src/server/server.cpp)
 target_include_directories(server_core PUBLIC src)
-target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto chat_core common_util Threads::Threads)
+target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto chat_core play_core common_util Threads::Threads)
 if(WIN32)
   target_link_libraries(server_core PUBLIC ws2_32 mswsock)  # Winsock
 endif()
@@ -96,6 +117,9 @@ apply_project_options(server_core)
 # 서버 실행 파일: 인자 파싱과 io_context 실행만 담당한다.
 add_executable(game_server src/server/main.cpp)
 target_link_libraries(game_server PRIVATE server_core chat_mysql)
+if(WIN32)
+  target_link_libraries(game_server PRIVATE winmm)  # 게임 틱을 위해 타이머 해상도를 1ms로 올린다
+endif()
 apply_project_options(game_server)
 
 # 동기식 클라이언트: 테스트와 수동 실험용. 모든 대기에 타임아웃이 있다.
@@ -117,6 +141,11 @@ add_executable(chat_client src/client/chat_client.cpp)
 target_link_libraries(chat_client PRIVATE client_core)
 apply_project_options(chat_client)
 
+# 대화형 게임 클라이언트(4단계): 방 만들기/코드 입장/이동 입력을 보내고 서버가 계산한 위치를 확인하는 수동 실험용.
+add_executable(game_client src/client/game_client.cpp)
+target_link_libraries(game_client PRIVATE client_core)
+apply_project_options(game_client)
+
 # 서버 통합 테스트: 테스트 프로세스 안에서 진짜 서버를 띄워 실제 TCP로 시나리오를 검증한다.
 add_executable(server_integration_test tests/server_integration_test.cpp)
 target_link_libraries(server_integration_test PRIVATE server_core client_core GTest::gtest_main)
@@ -128,6 +157,12 @@ add_executable(chat_integration_test tests/chat_integration_test.cpp)
 target_link_libraries(chat_integration_test PRIVATE server_core client_core GTest::gtest_main)
 apply_project_options(chat_integration_test)
 gtest_discover_tests(chat_integration_test)
+
+# 게임 통합 테스트(4단계): 방 만들기/입장/이동/스냅샷/연결 끊김/비정상 입력을 실제 TCP로 검증한다.
+add_executable(game_integration_test tests/game_integration_test.cpp)
+target_link_libraries(game_integration_test PRIVATE server_core client_core GTest::gtest_main)
+apply_project_options(game_integration_test)
+gtest_discover_tests(game_integration_test)
 
 # 부하 생성기(3단계): 많은 연결로 Ping을 보내 지연, 처리량, 오류, 서버 CPU/메모리를 잰다.
 add_executable(load_client src/tools/load_client.cpp)
