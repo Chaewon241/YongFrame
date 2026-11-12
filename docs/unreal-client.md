@@ -128,6 +128,41 @@ build\windows-local\Release\game_client.exe --port 7777 --create --nick alice
 
 방 코드가 출력되면 다른 터미널에서 `game_client.exe --port 7777 --join <코드> --nick bob`으로 입장하고, `/move 1 0`, `/stop`, `/leave`, `/help`를 써 본다.
 
+## 접속 계층 (`FGameNetworkConnection`, Unreal 프로젝트)
+
+Unreal 프로젝트의 `Source/YongClient/{Public,Private}/Network/GameNetworkConnection.*`가 서버와의 TCP 연결 하나를 맡는다. **프레임 단위 송수신만** 하며 게임 메시지(방 만들기, 입장, 이동, 스냅샷)는 아직 모른다(다음 단계). 수신 전용 스레드가 프레임을 큐에 넣고 게임 스레드가 `ReceiveMessage`로 꺼낸다.
+
+처음 작성된 버전에서 코드 검토로 찾아 고친 4가지:
+
+| 문제 | 수정 |
+| --- | --- |
+| 헤더(6바이트)나 본문이 쪼개져 오면 연결을 끊음(`Recv`가 요청보다 적게 줄 수 있음) | 정확히 N바이트가 모일 때까지 반복해서 읽음(`RecvExact`, 0.1초 대기 단위) |
+| 서버가 아무것도 보내지 않으면 `Disconnect`가 수신 스레드의 무한 대기 때문에 멈춤 | 0.1초마다 중지 요청을 확인하므로 끝나는 데 길어야 0.1초 |
+| 본문 버퍼가 65,530바이트라 최대 크기(65,534바이트) 프레임에서 넘침 | 길이(2~65,536)를 검사한 뒤에만 그 크기만큼 동적 할당 |
+| 헤더와 본문을 따로 `Send`하고 `NoDelay`를 켜지 않아 지연 ACK와 겹치면 수십 ms 튈 수 있음 | 한 버퍼로 합쳐 한 번에 전송, `NoDelay` 켬, 부분 전송 반복 |
+
+덤으로: 연결 제한 시간(기본 5초), 큐를 `TQueue`(SPSC)로, 오류 문자열의 스레드 안전성, 연결이 끊기면 `Tick`에서 자원 정리.
+
+### 시험 (`GameConnectSpike` 커맨들릿, 에디터를 닫고 실행)
+
+| 모드 | 상대 | 확인하는 것 |
+| --- | --- | --- |
+| `real` | 진짜 `game_server` | Ping 50회 응답 일치와 지연(p50 약 1.6~2.0 ms, 최대 약 2.5~3.3 ms), 유휴 상태 `Disconnect` 시간(수 ms), 서버가 없을 때 제한 시간 안에 실패, 너무 큰 본문 거부 |
+| `fake` | `Tools/fake_server.py <포트>` | 프레임을 1바이트씩 쪼개 보내기, 두 프레임 붙여 보내기, 최대 크기(65,534바이트) 본문, 규약에 어긋난 길이(65,537)에 연결 끊기 |
+| `send` | `Tools/fake_server.py <포트> send` | 프레임 20개가 한 번의 수신으로 통째로 도착하는지(송신을 한 번에 하는지). 판정은 가짜 서버의 종료 코드 |
+
+모두 통과했다. **변형 검증:** 코드를 예전 버그 방식으로 되돌려 시험이 잡는지 확인했다. 분할 수신, `Disconnect` 지연, 본문 크기 제한, 송신 분리 4가지를 모두 잡았다. 다만 송신 분리는 처음 만든 "왕복 지연" 시험으로는 **못 잡았다**(루프백은 ACK가 즉시 와서 지연이 생기지 않음). 그래서 `send` 모드를 추가했고, 수정한 코드는 20/20(첫 수신 1,006바이트), 되돌린 코드는 0/20(첫 수신 6바이트)이었다.
+
+시험은 로그의 `[통과]/[실패]`와 마지막 `결과:` 줄로 판정한다. **종료 코드로는 판정하지 못한다.** 프로젝트에 `AllToolsets` 플러그인이 켜져 있으면 엔진이 시작할 때 `GameFeatureData` 규칙 오류 2건을 내서 종료 코드가 항상 1이다(시험 결과와 무관).
+
+```bash
+build\windows-local\Release\game_server.exe --port 18300 --log-level info --stats-interval 0
+```
+
+```bash
+& 'D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\UnrealProjects\YongClient\YongClient.uproject' '-run=GameConnectSpike' '-mode=real' '-host=127.0.0.1' '-port=18300' '-unattended' '-nullrhi' '-nosplash' '-stdout'
+```
+
 ## Unreal MCP (Epic 제공, 5.8)
 
 UE 5.8에는 Epic의 실험 기능 플러그인 `ModelContextProtocol`("Unreal MCP")과 `EditorToolset`이 들어 있다(`Engine\Plugins\Experimental`). 기본으로 꺼져 있고, 켜면 에디터가 HTTP로 MCP 서버를 연다. 이 프로젝트에서 켜서 서버 응답까지 확인했다.
