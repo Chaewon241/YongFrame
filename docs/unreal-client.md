@@ -163,6 +163,45 @@ build\windows-local\Release\game_server.exe --port 18300 --log-level info --stat
 & 'D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\UnrealProjects\YongClient\YongClient.uproject' '-run=GameConnectSpike' '-mode=real' '-host=127.0.0.1' '-port=18300' '-unattended' '-nullrhi' '-nosplash' '-stdout'
 ```
 
+## 게임 메시지 계층 (`FGameClient`, Unreal 프로젝트)
+
+`Source/YongClient/{Public,Private}/Network/GameClient.*`가 접속 계층 위에서 서버의 게임 프로토콜([stage4.md](stage4.md))을 말한다. 메시지 ID 표는 `GameMessageIds.h`(서버 `message_ids.h`와 같은 값, 서버가 바뀌면 함께 고친다)다. Protobuf는 `GameClient.cpp` 안에만 있고 헤더는 Unreal 타입만 쓴다.
+
+| 하는 일 | 내용 |
+| --- | --- |
+| 요청 | `CreateRoom(닉네임)`, `JoinRoom(코드, 닉네임)`, `LeaveRoom()`, `SendMove(dx, dy)`. 응답은 델리게이트(`OnCreateRoomResult`, `OnJoinRoomResult`, `OnLeaveRoomResult`)로 온다 |
+| 이동 입력 | 길이 1 초과 방향은 1로 줄이고(`double`로 계산), NaN/무한대는 보내지 않는다. 입력 번호는 **보낸 것만** 1씩 올린다 |
+| 방 상태 | 접속자 목록과 방장을 보관한다. 입장/퇴장/방장 변경 알림(`OnRoomEvent`)을 받으면 **상태를 먼저 갱신한 뒤** 알린다 |
+| 스냅샷 | 서버가 계산한 위치(cm)를 보관하고 `OnSnapshot`으로 알린다. 위치를 클라이언트가 계산하지 않는다 |
+| 끊김 | 서버/네트워크/프로토콜 오류로 끊기면 이유와 함께 `OnDisconnected`를 **한 번만** 부른다. 사용자가 `Disconnect()`로 끊으면 부르지 않는다 |
+| 모르는 입력 | Ping 응답과 모르는 메시지 ID, 모르는 이벤트 종류는 무시한다(서버가 새 종류를 추가해도 깨지지 않게). 알려진 메시지를 해석하지 못하면 프로토콜 오류로 연결을 끊는다 |
+
+`UObject`가 아닌 일반 클래스다(에디터 없이 커맨들릿에서 시험하려고). 게임 안에서는 `GameInstance` 서브시스템이나 액터가 매 프레임 `Tick()`을 부르는 얇은 래퍼가 필요하다(아직 없다).
+
+### 시험 (`GameClientSpike` 커맨들릿, 에디터를 닫고 실행)
+
+| 모드 | 상대 | 내용 |
+| --- | --- | --- |
+| `real` (53건) | 진짜 `game_server` | 클라이언트 셋(alice, bob, carol)으로 방 만들기, 코드 입장, 입장 알림(본인은 못 받음), 오류 응답 4종(잘못된 코드, 없는 방, 중복 닉네임, 규칙 위반 닉네임)과 연결 유지, 이동 입력과 스냅샷(틱 증가, 틱당 이동 거리 15 cm 이하, 입력 번호 반영), 나가기와 퇴장 알림, 방에 없을 때 `NotInRoom`, 다시 입장하면 새 플레이어 번호, 방장이 나가면 퇴장 -> 방장 변경 알림과 방장 교체, 사용자가 끊으면 `OnDisconnected` 없음 |
+| `fake` (7건) | `Tools/fake_server.py <포트>` | 규약에 어긋난 길이를 받으면 `OnDisconnected`(이유에 `body_length`), 한 번만 알림, 끊긴 뒤 요청은 실패하고 죽지 않음 |
+| `garbage` (7건) | `Tools/fake_server.py <포트> garbage` | 해석할 수 없는 `WorldSnapshot`을 받으면 프로토콜 오류로 끊고 알림 |
+
+전부 통과했다. **변형 검증(9가지):** 코드를 일부러 망가뜨려 시험이 잡는지 확인했다. 나가기 후 방 상태 안 비움, 퇴장 알림 미반영, 방장 변경 미반영, 입장 알림 미반영, NaN 입력 전송, 해석 불가 스냅샷 무시, 끊김 미통지, 방 만들기 상태 미저장 8가지는 잡혔다. **1가지는 잡지 못했다:** "전송에 실패한 입력의 번호도 올림"이다. `SendMove`가 연결이 끊긴 상태에서는 먼저 거절하므로, 연결은 있는데 전송만 실패하는 경우를 시험으로 만들 수 없다(방어 코드로만 남아 있다).
+
+시험은 로그의 `[통과]/[실패]`와 마지막 `결과:` 줄로 판정한다(종료 코드는 `AllToolsets` 플러그인 때문에 항상 1). 에디터가 열려 있으면 Live Coding이 빌드를 막으므로 닫고 실행한다.
+
+```bash
+build\windows-local\Release\game_server.exe --port 18320 --log-level info --stats-interval 0
+```
+
+```bash
+& 'D:\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' 'D:\UnrealProjects\YongClient\YongClient.uproject' '-run=GameClientSpike' '-mode=real' '-host=127.0.0.1' '-port=18320' '-unattended' '-nullrhi' '-nosplash' '-stdout'
+```
+
+## Unreal 프로젝트 저장소
+
+`D:\UnrealProjects\YongClient`는 이 저장소와 별개인 **로컬 git 저장소**다(원격 없음). 제외 항목은 `.gitignore`: 빌드 산출물, 서버에서 복사한 `ThirdParty/Protobuf`(약 300 MB), 로그, `.claude/`(로컬 설정). `Content/`가 비어 있으므로 애셋이 생기기 전에 Git LFS를 설정한다. `Config/DefaultEngine.ini`에 엔진이 만든 `SecurityToken`(Android 파일 서버용)이 있으니 원격에 올릴 때는 비공개 저장소로 하거나 그 줄을 뺀다.
+
 ## Unreal MCP (Epic 제공, 5.8)
 
 UE 5.8에는 Epic의 실험 기능 플러그인 `ModelContextProtocol`("Unreal MCP")과 `EditorToolset`이 들어 있다(`Engine\Plugins\Experimental`). 기본으로 꺼져 있고, 켜면 에디터가 HTTP로 MCP 서버를 연다. 이 프로젝트에서 켜서 서버 응답까지 확인했다.
