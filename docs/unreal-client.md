@@ -202,6 +202,28 @@ build\windows-local\Release\game_server.exe --port 18320 --log-level info --stat
 
 `D:\UnrealProjects\YongClient`는 이 저장소와 별개인 **로컬 git 저장소**다(원격 없음). 제외 항목은 `.gitignore`: 빌드 산출물, 서버에서 복사한 `ThirdParty/Protobuf`(약 300 MB), 로그, `.claude/`(로컬 설정). `Content/`가 비어 있으므로 애셋이 생기기 전에 Git LFS를 설정한다. `Config/DefaultEngine.ini`에 엔진이 만든 `SecurityToken`(Android 파일 서버용)이 있으니 원격에 올릴 때는 비공개 저장소로 하거나 그 줄을 뺀다.
 
+## 게임 클라이언트 기반 (Unreal 프로젝트의 `Yong/` 클래스)
+
+게임 메시지 계층 위에 화면을 만드는 C++ 기반이다. 위치는 **서버가 계산한 값**이고 클라이언트는 방향만 보낸다.
+
+| 클래스 | 역할 |
+| --- | --- |
+| `FGameSnapshotInterpolator` (`Network/`) | 20Hz 스냅샷 사이를 보간해 화면 프레임마다 부드러운 위치를 만든다. 순수 계산이다. 시간축은 **서버 틱 번호**이고, 도착 시각의 지터는 최근 (도착 시각 - 틱 x 틱 간격)의 **최솟값**으로 흡수한다. 0.1초(2틱) 과거를 그린다. 다음 스냅샷이 없으면 외삽하지 않고 마지막 위치에 머문다 |
+| `UYongNetSubsystem` | `GameInstance` 수명의 블루프린트용 서버 연결(연결, 방 만들기/입장/나가기, 이동 입력, 방 상태, 보간된 위치, 끊김 이벤트). 레벨을 옮겨도 연결과 방 상태가 유지된다. PIE에서 플레이어를 여러 명으로 실행하면 플레이어마다 서브시스템이 따로 생긴다 |
+| `YongTypes.h` | 블루프린트 타입(`EYongGameResult`, `FYongRoomState`, `FYongRoomEvent`, `FYongPlayerState`). 번호는 `int32` |
+| `AYongPlayerActor` | 플레이어 한 명의 화면 표현. 서버 위치를 반영하고 움직인 방향으로 돌아본다. 모양/색/닉네임 위젯은 블루프린트 자식(`BP_YongPlayer`)에서 만들고 `OnPlayerInitialized`, `OnInfoUpdated`, `OnMovementStateChanged` 이벤트를 구현한다 |
+| `AYongCameraRig` | 탑뷰 카메라(기본 경사 -55도, 거리 1,800 cm, 회전 고정). 화면 위가 +X, 오른쪽이 +Y |
+| `AYongPlayerController` | WASD/방향키를 읽어 방향이 **바뀔 때만** 서버에 보낸다(대각선은 길이 1). Enhanced Input 애셋이 없어도 동작한다 |
+| `AYongRoomGameMode` | 보간된 서버 위치로 플레이어 액터를 만들고, 위치를 갱신하고, 나간 사람은 지운다. 카메라가 내 플레이어를 따라간다. 연결이 끊기면 메뉴 레벨(`MenuLevelName`, 기본 `L_Menu`)로 돌아간다 |
+
+좌표는 변환 없이 쓴다. 서버 좌표(cm)가 곧 월드 좌표이므로 바닥을 (0,0)~(5000,5000)에 두면 된다.
+
+**시험(`GameClientSpike`):** `interp`(21건, 서버 불필요), `subsystem`(18건, 진짜 서버에 `GameInstance` 둘), `subsystem-fake`(4건). 전부 통과했다. 서브시스템 시험에서 서버 위치를 약 4 ms 간격으로 읽었을 때 샘플 사이 최대 이동이 1.94 cm였다(보간이 없으면 스냅샷마다 15 cm씩 점프). **변형 검증 10가지(보간기 6, 서브시스템 4)를 모두 잡았다.** 지터 시험의 핵심은 Offset을 최솟값 대신 마지막 값으로 바꾸면 프레임당 이동 편차가 7.4 cm로 커져 실패하는 것이다.
+
+**아직 시험하지 못한 것:** 액터, 카메라, 컨트롤러, 게임 모드는 컴파일만 확인했다(에디터 없이 월드를 띄울 수 없어서, 레벨이 생긴 뒤 PIE에서 확인한다). 블루프린트 이벤트(동적 델리게이트)는 같은 이벤트의 C++ 판(`NativeOn...`)으로만 시험했고, 블루프린트 연결은 UMG를 만들 때 확인된다. `Connect`는 서버가 없으면 제한 시간(기본 3초)만큼 게임 스레드를 막는다(비동기 연결은 아직 아니다).
+
+**작업 순서 규칙:** C++ 빌드는 에디터가 꺼져 있어야 하고(Live Coding이 막는다), MCP는 에디터가 켜져 있어야 한다. C++ 단계와 에디터 단계를 번갈아 한다. 애셋(`Content/`)을 만들기 전에 Unreal 저장소의 `.gitattributes`(Git LFS)를 커밋해 둔다.
+
 ## Unreal MCP (Epic 제공, 5.8)
 
 UE 5.8에는 Epic의 실험 기능 플러그인 `ModelContextProtocol`("Unreal MCP")과 `EditorToolset`이 들어 있다(`Engine\Plugins\Experimental`). 기본으로 꺼져 있고, 켜면 에디터가 HTTP로 MCP 서버를 연다. 이 프로젝트에서 켜서 서버 응답까지 확인했다.
