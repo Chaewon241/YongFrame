@@ -200,7 +200,7 @@ build\windows-local\Release\game_server.exe --port 18320 --log-level info --stat
 
 ## Unreal 프로젝트 저장소
 
-`D:\UnrealProjects\YongClient`는 이 저장소와 별개인 **로컬 git 저장소**다(원격 없음). 제외 항목은 `.gitignore`: 빌드 산출물, 서버에서 복사한 `ThirdParty/Protobuf`(약 300 MB), 로그, `.claude/`(로컬 설정). `Content/`가 비어 있으므로 애셋이 생기기 전에 Git LFS를 설정한다. `Config/DefaultEngine.ini`에 엔진이 만든 `SecurityToken`(Android 파일 서버용)이 있으니 원격에 올릴 때는 비공개 저장소로 하거나 그 줄을 뺀다.
+`D:\UnrealProjects\YongClient`는 이 저장소와 별개인 **로컬 git 저장소**다(원격 없음). 제외 항목은 `.gitignore`: 빌드 산출물, 서버에서 복사한 `ThirdParty/Protobuf`(약 300 MB), 로그, `.claude/`(로컬 설정). `Content/`의 애셋(`.uasset`, `.umap` 등)은 `.gitattributes`로 **Git LFS**에 올린다(`git lfs ls-files`로 확인). `Config/DefaultEngine.ini`에 엔진이 만든 `SecurityToken`(Android 파일 서버용)이 있으니 원격에 올릴 때는 비공개 저장소로 하거나 그 줄을 뺀다.
 
 ## 게임 클라이언트 기반 (Unreal 프로젝트의 `Yong/` 클래스)
 
@@ -220,7 +220,30 @@ build\windows-local\Release\game_server.exe --port 18320 --log-level info --stat
 
 **시험(`GameClientSpike`):** `interp`(21건, 서버 불필요), `subsystem`(18건, 진짜 서버에 `GameInstance` 둘), `subsystem-fake`(4건). 전부 통과했다. 서브시스템 시험에서 서버 위치를 약 4 ms 간격으로 읽었을 때 샘플 사이 최대 이동이 1.94 cm였다(보간이 없으면 스냅샷마다 15 cm씩 점프). **변형 검증 10가지(보간기 6, 서브시스템 4)를 모두 잡았다.** 지터 시험의 핵심은 Offset을 최솟값 대신 마지막 값으로 바꾸면 프레임당 이동 편차가 7.4 cm로 커져 실패하는 것이다.
 
-**아직 시험하지 못한 것:** 액터, 카메라, 컨트롤러, 게임 모드는 컴파일만 확인했다(에디터 없이 월드를 띄울 수 없어서, 레벨이 생긴 뒤 PIE에서 확인한다). 블루프린트 이벤트(동적 델리게이트)는 같은 이벤트의 C++ 판(`NativeOn...`)으로만 시험했고, 블루프린트 연결은 UMG를 만들 때 확인된다. `Connect`는 서버가 없으면 제한 시간(기본 3초)만큼 게임 스레드를 막는다(비동기 연결은 아직 아니다).
+**월드가 필요한 부분은 PIE에서 확인했다**(아래 "메뉴와 HUD" 절의 시험). `Connect`는 서버가 없으면 제한 시간(기본 3초)만큼 게임 스레드를 막는다(비동기 연결은 아직 아니다). 블루프린트 이벤트(동적 델리게이트)는 같은 이벤트의 C++ 판(`NativeOn...`)으로만 자동 시험했다.
+
+## 메뉴와 HUD (UMG)
+
+화면 로직은 C++, 배치와 모양은 에디터(UMG)가 맡는다. 위젯 로직 클래스는 `UCLASS(Abstract)`이고, 블루프린트 자식이 `BindWidget` 이름과 **같은 이름과 타입**의 위젯을 트리에 두어야 컴파일된다.
+
+| C++ 클래스 | 블루프린트 자식 | 필요한 위젯 (이름: 타입) |
+| --- | --- | --- |
+| `UYongMenuWidget` | `WBP_MainMenu` | `NicknameBox`, `HostBox`, `PortBox`, `CodeBox`: EditableTextBox / `CreateButton`, `JoinButton`: Button / `StatusText`: TextBlock |
+| `UYongHudWidget` | `WBP_HUD` | `RoomCodeText`, `StatusText`: TextBlock / `PlayerListBox`: VerticalBox / `LeaveButton`: Button |
+
+- `AYongMenuGameMode`(블루프린트 `BP_MenuGameMode`)는 `MenuWidgetClass`로 메뉴를 띄우고, `AYongRoomGameMode`(`BP_YongRoomGameMode`)는 `HudWidgetClass`로 HUD를 띄운다. 레벨은 메뉴 `L_Menu`, 플레이 `L_Farm`이다.
+- 입력 검증은 순수 함수(`YongUi::` 네임스페이스, `YongUiHelpers.*`)로 분리했다: 방 코드는 숫자 6자리(입력 필터가 숫자 외 글자를 걸러 내고 6자리로 자른다), 닉네임은 앞뒤 공백을 지우고 1~16 코드포인트(이모지 같은 서로게이트 쌍은 한 글자), 결과 열거형(`EYongGameResult`)별 한국어 문구는 서로 다르다. 서버가 거부하는 전각 숫자를 걸러 내는 것도 여기서 한다.
+- 컨트롤러는 `FInputModeGameAndUI`와 마우스 커서를 쓴다. WASD는 게임이 받고 클릭은 HUD 버튼이 받는다.
+- `UYongNetSubsystem::LastDisconnectReason`에 끊김 사유를 남겨 메뉴 레벨로 돌아온 뒤 `StatusText`에 보여 준다.
+
+**자동 시험:** `-run=GameClientSpike -mode=ui`(21건, 서버·월드 불필요)가 `YongUi::` 함수를 확인한다. **변형 검증 5가지를 모두 잡았다**(6자리 자르기 제거, 길이 검사 제거, 닉네임 공백 제거 제거, 서로게이트 처리 제거, `RoomFull` 문구를 `RoomNotFound`와 같게 변경).
+
+**PIE 시험(사람이 확인):** 서버를 켜고 에디터의 플레이 설정을 Number of Players 2, Net Mode `Play Standalone`, "Run Under One Process" 끔으로 둔 뒤 `L_Menu`에서 플레이했다. 사용자가 방 만들기, 코드로 입장, 한 방에 여러 플레이어가 보이는 흐름이 잘 동작한다고 확인했다. 창별 세부 항목(닉네임 라벨, 나가기, 서버 종료 시 메뉴 복귀, 창 3~4개)은 항목별 기록이 없으므로 확인된 것으로 적지 않는다. 패키징한 빌드는 시험하지 않았다.
+
+**에디터 쪽 메모**
+- `Config/*.ini`에 기본 맵(`GameDefaultMap`)이 없다. 에디터 플레이에는 영향이 없고 패키징할 때 정한다.
+- 환경 소품은 Kenney 메시 8개(`Content/YongClient/Environment/Kenney/`)다. 출처와 라이선스는 아직 확인하지 않았다(Kenney 에셋은 보통 CC0이지만 받은 파일의 라이선스를 확인해 이 문서에 적는다).
+- 이 에셋들은 MCP 세션이 만들었다. 이 작업에서 MCP는 레이아웃과 에셋만 맡고 로직은 C++에 둔다.
 
 **작업 순서 규칙:** C++ 빌드는 에디터가 꺼져 있어야 하고(Live Coding이 막는다), MCP는 에디터가 켜져 있어야 한다. C++ 단계와 에디터 단계를 번갈아 한다. 애셋(`Content/`)을 만들기 전에 Unreal 저장소의 `.gitattributes`(Git LFS)를 커밋해 둔다.
 
@@ -252,6 +275,7 @@ UE 5.8에는 Epic의 실험 기능 플러그인 `ModelContextProtocol`("Unreal M
 
 ## 다음
 
-1. (선택) 에디터에서 프로젝트를 열어 보고 VS 솔루션을 생성한다.
-2. 4단계 서버 작업(방 관리자, 숫자 방 코드, 20Hz 틱, 서버 판정 이동)을 만들고, 그에 맞춰 `.proto`와 Unreal 쪽 비동기 접속 계층을 만든다.
-3. 맵 크기, 이동 속도, 충돌 크기를 정한다([game-plan.md](game-plan.md)의 미정 사항).
+1. 메뉴 → 방 → 이동까지 되는 최소 클라이언트는 완성됐다. 남은 확인: 3~4명, 방장 변경, 서버 종료 시 복귀, 잘못된 입력 문구.
+2. Unreal 쪽 비동기 접속(지금은 `Connect`가 게임 스레드를 막는다).
+3. 맵 크기, 이동 속도, 충돌 크기를 정한다([game-plan.md](game-plan.md)의 미정 사항). 지금 값은 서버의 임의 기본값이다.
+4. 게임 기능(자원 채집, 집 짓기, 농사)은 game-plan.md의 확장 순서를 따른다.
