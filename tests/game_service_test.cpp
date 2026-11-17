@@ -747,5 +747,234 @@ TEST(GameServiceTimer, TicksRunByThemselvesAndStopAfterShutdown) {
   EXPECT_EQ(service.stats().ticks.load(), steps);  // 종료 뒤에는 더 돌지 않는다
 }
 
+// ============================================================ 자원 채집 (docs/stage4-gather.md)
+
+protocol::GatherResponse DoGather(GameService& service, const ClientPtr& client, std::uint32_t node_id) {
+  protocol::GatherRequest request;
+  request.set_node_id(node_id);
+  service.HandleGather(client, request);
+  return client->Last<protocol::GatherResponse>(MessageId::kGatherResponse);
+}
+
+// 허용 거리를 맵 전체보다 크게, 나무 체력을 1로 해 한 번에 고갈되게 한 설정. 나무는 1~30번, 돌은 31~50번이다.
+class GatherServiceTest : public GameServiceTest {
+ protected:
+  GatherServiceTest() : GameServiceTest(MakeConfig()) {}
+  static PlayConfig MakeConfig() {
+    PlayConfig config;
+    config.gather_range_cm = 100000.0f;
+    config.tree_hp = 1;
+    return config;
+  }
+
+  // 방을 만들고 두 번째 사람을 입장시킨다. alice(1), bob(2).
+  std::string TwoPlayers() {
+    const std::string code = CreateRoomWith(1, "alice");
+    auto bob = NewClient(2);
+    EXPECT_EQ(Join(bob, code, "bob").result(), protocol::GAME_OK);
+    return code;
+  }
+};
+
+TEST_F(GameServiceTest, RoomStateCarriesEveryNodeWithItsKindPositionAndHealth) {
+  auto alice = NewClient(1);
+  const auto state = Create(alice, "alice").state();
+  const PlayConfig config;
+  ASSERT_EQ(state.nodes_size(), static_cast<int>(config.tree_count + config.rock_count));
+  int trees = 0;
+  int rocks = 0;
+  for (int i = 0; i < state.nodes_size(); ++i) {
+    const auto& node = state.nodes(i);
+    EXPECT_EQ(node.node_id(), static_cast<std::uint32_t>(i + 1));
+    EXPECT_EQ(node.hp(), node.max_hp());
+    EXPECT_GT(node.x(), 0.0f);
+    EXPECT_GT(node.y(), 0.0f);
+    (node.kind() == protocol::RESOURCE_TREE ? trees : rocks)++;
+  }
+  EXPECT_EQ(trees, static_cast<int>(config.tree_count));
+  EXPECT_EQ(rocks, static_cast<int>(config.rock_count));
+}
+
+TEST_F(GatherServiceTest, SuccessfulGatherRepliesAtOnceAndTheRoomLearnsOnTheNextTick) {
+  TwoPlayers();
+  auto alice = clients_[1];
+  auto bob = clients_[2];
+
+  const auto response = DoGather(service_, alice, 1);
+  EXPECT_EQ(response.result(), protocol::GAME_OK);
+  EXPECT_EQ(response.node_id(), 1u);
+  EXPECT_EQ(response.wood(), 1u);
+  EXPECT_EQ(response.stone(), 0u);
+  EXPECT_EQ(alice->CountOf(MessageId::kResourceUpdate), 0u) << "알림은 틱 끝에 간다";
+  EXPECT_EQ(service_.stats().gathers_ok.load(), 1u);
+
+  service_.Tick();
+  for (const auto& client : {alice, bob}) {
+    ASSERT_EQ(client->CountOf(MessageId::kResourceUpdate), 1u) << "채집한 본인과 다른 사람 모두 받는다";
+    const auto update = client->Nth<protocol::ResourceUpdate>(MessageId::kResourceUpdate);
+    EXPECT_EQ(update.tick(), 1u);
+    ASSERT_EQ(update.nodes_size(), 1);
+    EXPECT_EQ(update.nodes(0).node_id(), 1u);
+    EXPECT_EQ(update.nodes(0).hp(), 0u) << "나무 체력 1이라 고갈";
+  }
+  EXPECT_EQ(service_.stats().nodes_depleted.load(), 1u);
+  EXPECT_EQ(service_.stats().resource_updates_sent.load(), 2u);
+
+  service_.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kResourceUpdate), 1u) << "바뀐 것이 없으면 보내지 않는다";
+}
+
+TEST_F(GatherServiceTest, RocksGiveStoneAndInventoriesAreSeparate) {
+  TwoPlayers();
+  const auto rock = DoGather(service_, clients_[2], 31);
+  EXPECT_EQ(rock.result(), protocol::GAME_OK);
+  EXPECT_EQ(rock.wood(), 0u);
+  EXPECT_EQ(rock.stone(), 1u);
+  const auto tree = DoGather(service_, clients_[1], 1);
+  EXPECT_EQ(tree.wood(), 1u);
+  EXPECT_EQ(tree.stone(), 0u);
+}
+
+TEST_F(GatherServiceTest, EachRejectionHasItsOwnCodeAndChangesNothing) {
+  TwoPlayers();
+  auto alice = clients_[1];
+  ASSERT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_OK);  // 1번 고갈, 쿨다운 시작
+  service_.Tick();
+  const std::size_t updates = alice->CountOf(MessageId::kResourceUpdate);
+
+  EXPECT_EQ(DoGather(service_, alice, 9999).result(), protocol::GAME_NODE_NOT_FOUND);
+  EXPECT_EQ(DoGather(service_, alice, 0).result(), protocol::GAME_NODE_NOT_FOUND);
+  EXPECT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_NODE_DEPLETED);
+  const auto cooldown = DoGather(service_, alice, 2);
+  EXPECT_EQ(cooldown.result(), protocol::GAME_GATHER_COOLDOWN);
+  EXPECT_EQ(cooldown.wood(), 1u) << "거부 응답도 내 현재 인벤토리를 담는다";
+
+  service_.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kResourceUpdate), updates) << "거부는 노드를 바꾸지 않는다";
+  EXPECT_EQ(service_.stats().gathers_ok.load(), 1u);
+  EXPECT_EQ(service_.stats().gathers_rejected.load(), 4u);
+  EXPECT_EQ(service_.room_count(), 1u) << "연결도 방도 그대로";
+}
+
+TEST_F(GameServiceTest, GatheringFromTooFarAwayIsRejectedByTheServerPosition) {
+  CreateRoomWith(1, "alice");  // 기본 설정: 허용 거리 200 cm, 노드는 시작 위치에서 멀리 있다
+  const auto response = DoGather(service_, clients_[1], 1);
+  EXPECT_EQ(response.result(), protocol::GAME_TOO_FAR);
+  EXPECT_EQ(response.wood(), 0u);
+}
+
+TEST_F(GameServiceTest, GatheringOutsideARoomIsRejectedAndKeepsTheConnection) {
+  auto loner = NewClient(7);
+  const auto response = DoGather(service_, loner, 1);
+  EXPECT_EQ(response.result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_EQ(service_.stats().gathers_rejected.load(), 1u);
+  // 나간 뒤의 요청도 마찬가지
+  CreateRoomWith(8, "alice");
+  Leave(clients_[8]);
+  EXPECT_EQ(DoGather(service_, clients_[8], 1).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_EQ(service_.room_count(), 0u);
+}
+
+TEST_F(GatherServiceTest, ALateJoinerReceivesTheCurrentNodeHealth) {
+  const std::string code = CreateRoomWith(1, "alice");
+  ASSERT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_OK);
+  service_.Tick();
+  auto bob = NewClient(2);
+  const auto joined = Join(bob, code, "bob");
+  ASSERT_EQ(joined.result(), protocol::GAME_OK);
+  ASSERT_GT(joined.state().nodes_size(), 2);
+  EXPECT_EQ(joined.state().nodes(0).hp(), 0u) << "고갈된 노드";
+  EXPECT_EQ(joined.state().nodes(1).hp(), 1u) << "그대로인 노드";
+}
+
+TEST_F(GatherServiceTest, DepletedNodeComesBackAfterExactlyTheRespawnTicksAndTheRoomIsTold) {
+  TwoPlayers();
+  auto bob = clients_[2];
+  ASSERT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_OK);
+  service_.Tick();  // 1틱: 고갈 알림
+  ASSERT_EQ(bob->CountOf(MessageId::kResourceUpdate), 1u);
+
+  const PlayConfig config = service_.config();
+  // 고갈은 월드 틱 0에서 일어났으므로 600틱째에 재생한다. 위에서 1틱 지났으니 598틱을 더 돌리면 599틱.
+  for (std::uint32_t i = 0; i < config.respawn_ticks - 2; ++i) service_.Tick();
+  EXPECT_EQ(bob->CountOf(MessageId::kResourceUpdate), 1u) << "599틱까지는 알림이 없다";
+  EXPECT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_NODE_DEPLETED);
+  service_.Tick();  // 600틱
+  ASSERT_EQ(bob->CountOf(MessageId::kResourceUpdate), 2u);
+  const auto update = bob->Last<protocol::ResourceUpdate>(MessageId::kResourceUpdate);
+  ASSERT_EQ(update.nodes_size(), 1);
+  EXPECT_EQ(update.nodes(0).node_id(), 1u);
+  EXPECT_EQ(update.nodes(0).hp(), 1u);
+  EXPECT_EQ(update.tick(), config.respawn_ticks);
+  EXPECT_EQ(service_.stats().nodes_respawned.load(), 1u);
+  EXPECT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_OK) << "재생한 노드는 다시 칠 수 있다";
+}
+
+TEST_F(GatherServiceTest, ChangesInOneTickAreMergedIntoOneUpdateSortedByNode) {
+  TwoPlayers();
+  ASSERT_EQ(DoGather(service_, clients_[1], 5).result(), protocol::GAME_OK);
+  ASSERT_EQ(DoGather(service_, clients_[2], 2).result(), protocol::GAME_OK);
+  service_.Tick();
+  ASSERT_EQ(clients_[1]->CountOf(MessageId::kResourceUpdate), 1u);
+  const auto update = clients_[1]->Nth<protocol::ResourceUpdate>(MessageId::kResourceUpdate);
+  ASSERT_EQ(update.nodes_size(), 2);
+  EXPECT_EQ(update.nodes(0).node_id(), 2u);
+  EXPECT_EQ(update.nodes(1).node_id(), 5u);
+}
+
+TEST_F(GatherServiceTest, ACatchUpTickStillDeliversEveryChangeAndRespawnsInOrder) {
+  CreateRoomWith(1, "alice");
+  auto alice = clients_[1];
+  ASSERT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_OK);
+  service_.Tick(3);  // 따라잡기: 세 틱을 한꺼번에
+  ASSERT_EQ(alice->CountOf(MessageId::kResourceUpdate), 1u);
+  EXPECT_EQ(alice->Last<protocol::ResourceUpdate>(MessageId::kResourceUpdate).tick(), 3u);
+
+  const std::uint32_t respawn = service_.config().respawn_ticks;
+  service_.Tick(respawn - 3);  // 정확히 재생 틱까지 한꺼번에
+  ASSERT_EQ(alice->CountOf(MessageId::kResourceUpdate), 2u);
+  EXPECT_EQ(alice->Last<protocol::ResourceUpdate>(MessageId::kResourceUpdate).nodes(0).hp(), 1u);
+}
+
+TEST_F(GatherServiceTest, UpdatesStayInsideTheirOwnRoom) {
+  CreateRoomWith(1, "alice");
+  CreateRoomWith(2, "bob");  // 다른 방
+  ASSERT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_OK);
+  service_.Tick();
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kResourceUpdate), 1u);
+  EXPECT_EQ(clients_[2]->CountOf(MessageId::kResourceUpdate), 0u);
+  EXPECT_EQ(DoGather(service_, clients_[2], 1).result(), protocol::GAME_OK) << "다른 방의 1번 노드는 멀쩡하다";
+}
+
+TEST_F(GatherServiceTest, ALeaverDuringUpdateDeliveryDoesNotBreakTheTick) {
+  TwoPlayers();
+  // 알림을 받는 순간 다른 사람의 연결이 닫히는 경우(송신 큐 초과 등)
+  clients_[1]->on_deliver = [this](MessageId id) {
+    if (id == MessageId::kResourceUpdate) service_.OnDisconnect(2);
+  };
+  ASSERT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_OK);
+  service_.Tick();
+  EXPECT_EQ(service_.RoomCodeOf(2), "");
+  EXPECT_EQ(service_.room_count(), 1u);
+  service_.Tick();  // 이어서 틱이 계속 돈다
+  EXPECT_EQ(service_.stats().current_players.load(), 1u);
+}
+
+TEST(GameServiceNoNodes, ARoomWithoutNodesWorks) {
+  boost::asio::io_context io;
+  PlayConfig config;
+  config.tree_count = 0;
+  config.rock_count = 0;
+  GameService service(io, config);
+  auto alice = std::make_shared<FakeClient>(1);
+  protocol::CreateRoomRequest request;
+  request.set_nickname("alice");
+  service.HandleCreateRoom(alice, request);
+  EXPECT_EQ(alice->Last<protocol::CreateRoomResponse>(MessageId::kCreateRoomResponse).state().nodes_size(), 0);
+  EXPECT_EQ(DoGather(service, alice, 1).result(), protocol::GAME_NODE_NOT_FOUND);
+  service.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kResourceUpdate), 0u);
+}
+
 }  // namespace
 }  // namespace game::play

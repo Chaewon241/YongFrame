@@ -94,6 +94,10 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 | 106 | `MoveInput{sequence, dir_x, dir_y}` (응답 없음) | C→S |
 | 110 | `RoomEvent{kind, player, host_player_id}` | S→C |
 | 111 | `WorldSnapshot{tick, players[{player_id, x, y, last_input_seq}]}` | S→C |
+| 107 / 108 | `GatherRequest{node_id}` / `GatherResponse{result, node_id, wood, stone}` | C→S / S→C |
+| 112 | `ResourceUpdate{tick, nodes[{node_id, hp}]}` (바뀐 노드가 있는 틱에만) | S→C |
+
+자원 채집(107, 108, 112, `RoomState.nodes`, 결과 코드 9~12)의 규칙은 [stage4-gather.md](stage4-gather.md)가 기준이고, Unreal 쪽 구현은 아래 "자원 채집 (Unreal)" 절이다.
 
 - 방 코드는 숫자 6자리 **문자열**이다(`"000042"`처럼 앞자리가 0일 수 있다). 정수로 바꾸지 않는다.
 - 위치 단위는 센티미터(Unreal과 같음), 맵은 5,000 x 5,000 cm이고 원점은 한쪽 모서리다. 이동 속도 300 cm/s, 최대 4명, 틱 20 Hz는 **임의로 정한 기본값**이다(`PlayConfig`).
@@ -111,6 +115,11 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 | `MoveInput{sequence=1, dir_x=1.0, dir_y=0}` | `00 00 00 09` `00 6A` `08 01 15 00 00 80 3F` (`dir_y`가 0이면 필드를 생략) |
 | `MoveInput{sequence=2, dir_x=0.5, dir_y=-1.0}` | `00 00 00 0E` `00 6A` `08 02 15 00 00 00 3F 1D 00 00 80 BF` |
 | `CreateRoomResponse{OK, state{room_code="000042", your=1, host=1, players=[1:"alice"]}}` | `00 00 00 1B` `00 65` `12 17 0A 06 30 30 30 30 34 32 10 01 18 01 22 09 08 01 12 05 61 6C 69 63 65` (`result`가 OK(0)이면 필드를 생략) |
+
+| `GatherRequest{node_id=7}` | `00 00 00 04` `00 6B` `08 07` |
+| `GatherResponse{OK, node_id=7, wood=1, stone=0}` | `00 00 00 06` `00 6C` `10 07 18 01` (`result`가 OK(0)이면 생략, `stone`이 0이면 생략) |
+| `GatherResponse{TOO_FAR(11), node_id=7, wood=3, stone=2}` | `00 00 00 0A` `00 6C` `08 0B 10 07 18 03 20 02` |
+| `ResourceUpdate{tick=3, nodes=[{node_id=1, hp=0}]}` | `00 00 00 08` `00 70` `08 03 12 02 08 01` (`hp`가 0이면 필드를 생략) |
 
 `float`은 Protobuf가 4바이트 little-endian으로 인코딩한다(`1.0` = `00 00 80 3F`). 프레임 헤더(길이, ID)는 big-endian이다.
 
@@ -246,6 +255,23 @@ build\windows-local\Release\game_server.exe --port 18320 --log-level info --stat
 - 이 에셋들은 MCP 세션이 만들었다. 이 작업에서 MCP는 레이아웃과 에셋만 맡고 로직은 C++에 둔다.
 
 **작업 순서 규칙:** C++ 빌드는 에디터가 꺼져 있어야 하고(Live Coding이 막는다), MCP는 에디터가 켜져 있어야 한다. C++ 단계와 에디터 단계를 번갈아 한다. 애셋(`Content/`)을 만들기 전에 Unreal 저장소의 `.gitattributes`(Git LFS)를 커밋해 둔다.
+
+## 자원 채집 (Unreal)
+
+서버 규칙과 완료 기준은 [stage4-gather.md](stage4-gather.md)다. Unreal 쪽 구현:
+
+| 클래스 | 역할 |
+| --- | --- |
+| `FGameClient` | `Gather(NodeId)`, 채집 응답(`OnGatherResult`: 결과, 노드 번호, 내 인벤토리), 체력 변화(`OnResourcesChanged`), 방 상태의 `Nodes`(체력은 `ResourceUpdate`로 갱신), `GetInventory()`. 방을 나가거나 연결이 끊기면 인벤토리와 노드가 비워지고, 방 밖에서 도착한 응답/알림은 버린다. 모르는 노드 번호나 종류는 건너뛴다 |
+| `UYongNetSubsystem` | 블루프린트용 `Gather`, `GetResourceNodes`, `GetInventory`, `FindNearestAliveNode(위치, 최대 거리)`, `GetMyPosition()`(보간된 내 위치), 이벤트 `OnGatherResult`, `OnResourcesChanged`(바뀐 노드 번호들) |
+| `AYongResourceNodeActor` | 노드 하나의 화면 표현. 노드 번호로 메시 후보(`MeshVariants`) 중 하나를 고르고, 체력이 줄면 눌리는 연출, 0이면 숨김, 재생하면 다시 보이게 한다(C++가 처리). 목표로 고르면 약간 커진다. 충돌 없음. `OnNodeHit/Depleted/Respawned`는 블루프린트 이벤트 |
+| `AYongRoomGameMode` | `TreeNodeClass`, `RockNodeClass`로 서버 노드 목록에서 액터를 만들고 체력 변화를 반영한다. `SetTargetedNode`로 목표 표시 |
+| `AYongPlayerController` | 내 위치에서 150 cm 안의 가장 가까운 살아 있는 노드를 목표로 고르고, `E`를 누르고 있으면 0.55초마다 채집을 요청한다(서버 허용 거리는 200 cm, 쿨다운 0.5초) |
+| `UYongHudWidget` | 선택 위젯 `WoodText`, `StoneText`, `HintText`(`BindWidgetOptional`, 없어도 컴파일된다). 거부 문구(너무 멂, 고갈)는 2초만 `StatusText`에 보인다. 쿨다운 거부는 띄우지 않는다 |
+
+**시험(`GameClientSpike`):** `gather`(40건, 진짜 서버에 `FGameClient` 셋: 방 만들기 응답의 노드 50개와 종류, 시작 위치에서 `TooFar`와 `NodeNotFound`, 가까운 나무까지 **실제로 걸어가** 치기, 목재 증가, 방 사람 모두의 체력 변화, 쿨다운 거부, 쿨다운을 지킨 연속 채집과 고갈, `NodeDepleted`, 돌의 석재, 늦은 입장자가 고갈 상태를 받음, 나가면 인벤토리와 노드가 비워짐), `subsystem-gather`(25건: 같은 흐름을 서브시스템으로, 가장 가까운 노드 찾기의 경계와 "번호가 낮은 쪽이 아니라 가까운 쪽" 선택 포함). 서버 재생(30초)은 서버 쪽 시험이 확인하므로 여기서는 기다리지 않는다. 서버는 기본 설정이면 되고(`game_server.exe --port N`) 특별한 옵션이 없다.
+
+**아직 시험하지 못한 것:** 노드 액터, 게임 모드의 노드 동기화, 컨트롤러의 `E` 입력과 목표 선택, HUD 표시는 컴파일만 확인했다(월드가 필요하다). 에디터 쪽 에셋(`BP_ResourceTree`, `BP_ResourceRock`, `WBP_HUD`의 새 위젯)은 MCP 세션이 만들고, PIE에서 사람이 확인한다.
 
 ## Unreal MCP (Epic 제공, 5.8)
 

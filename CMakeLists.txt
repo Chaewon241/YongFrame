@@ -75,7 +75,7 @@ apply_project_options(chat_room_test)
 gtest_discover_tests(chat_room_test)
 
 # 게임 로직(4단계): 월드(이동 계산), 방, 방 관리와 틱. 소켓을 모르므로 가짜 연결로 단위 테스트할 수 있다.
-add_library(play_core STATIC src/play/world.cpp src/play/room.cpp src/play/game_service.cpp)
+add_library(play_core STATIC src/play/world.cpp src/play/resources.cpp src/play/room.cpp src/play/game_service.cpp)
 target_include_directories(play_core PUBLIC src)
 target_link_libraries(play_core PUBLIC chat_core game_proto Boost::headers Threads::Threads)
 apply_project_options(play_core)
@@ -84,6 +84,11 @@ add_executable(play_world_test tests/play_world_test.cpp)
 target_link_libraries(play_world_test PRIVATE play_core GTest::gtest_main)
 apply_project_options(play_world_test)
 gtest_discover_tests(play_world_test)
+
+add_executable(play_resources_test tests/play_resources_test.cpp)
+target_link_libraries(play_resources_test PRIVATE play_core GTest::gtest_main)
+apply_project_options(play_resources_test)
+gtest_discover_tests(play_resources_test)
 
 add_executable(play_room_test tests/play_room_test.cpp)
 target_link_libraries(play_room_test PRIVATE play_core GTest::gtest_main)

@@ -353,7 +353,8 @@ TEST_P(BadGamePayloadTest, UnparsableRequestClosesTheConnection) {
 
 INSTANTIATE_TEST_SUITE_P(Ids, BadGamePayloadTest,
                          ::testing::Values(MessageId::kCreateRoomRequest, MessageId::kJoinRoomRequest,
-                                           MessageId::kLeaveRoomRequest, MessageId::kMoveInput));
+                                           MessageId::kLeaveRoomRequest, MessageId::kMoveInput,
+                                           MessageId::kGatherRequest));
 
 // 서버가 보내는 쪽 메시지를 클라이언트가 보내면 알 수 없는 ID와 똑같이 연결을 닫는다.
 class GameServerOnlyIdTest : public ::testing::TestWithParam<MessageId> {};
@@ -370,7 +371,106 @@ TEST_P(GameServerOnlyIdTest, ServerToClientIdsAreRejected) {
 INSTANTIATE_TEST_SUITE_P(Ids, GameServerOnlyIdTest,
                          ::testing::Values(MessageId::kCreateRoomResponse, MessageId::kJoinRoomResponse,
                                            MessageId::kLeaveRoomResponse, MessageId::kRoomEvent,
-                                           MessageId::kWorldSnapshot));
+                                           MessageId::kWorldSnapshot, MessageId::kGatherResponse,
+                                           MessageId::kResourceUpdate));
+
+// ============================================================ 자원 채집 (docs/stage4-gather.md)
+
+// 허용 거리를 맵 전체보다 크게 해서 시작 위치에서 어느 노드든 칠 수 있게 한 서버.
+server::ServerConfig GatherServerConfig(std::uint32_t tree_hp = 5, std::uint32_t respawn_ticks = 600) {
+  server::ServerConfig config = DefaultServerConfig();
+  config.play.gather_range_cm = 100000.0f;
+  config.play.tree_hp = tree_hp;
+  config.play.respawn_ticks = respawn_ticks;
+  return config;
+}
+
+TEST(GameIntegration, GatheringOverTcpUpdatesEveryoneInTheRoomAndLateJoiners) {
+  TestServer server(GatherServerConfig());
+  std::string code;
+  auto alice = CreateRoomPlayer(server, "alice", &code);
+  auto bob = JoinRoomPlayer(server, code, "bob");
+
+  const auto hit = Gather(*alice.client, 1);
+  ASSERT_EQ(hit.result(), protocol::GAME_OK);
+  EXPECT_EQ(hit.node_id(), 1u);
+  EXPECT_EQ(hit.wood(), 1u);
+  EXPECT_EQ(hit.stone(), 0u);
+
+  const auto hp_is_four = [](const protocol::ResourceUpdate& u) {
+    return u.nodes_size() == 1 && u.nodes(0).node_id() == 1 && u.nodes(0).hp() == 4;
+  };
+  protocol::ResourceUpdate update;
+  EXPECT_TRUE(WaitResourceUpdate(*alice.client, update, hp_is_four)) << "친 본인도 방 알림을 받는다";
+  EXPECT_TRUE(WaitResourceUpdate(*bob.client, update, hp_is_four));
+
+  // 다른 사람이 같은 노드를 치면 이어서 줄어든다. 인벤토리는 각자 것이다.
+  const auto bob_hit = Gather(*bob.client, 1);
+  EXPECT_EQ(bob_hit.result(), protocol::GAME_OK);
+  EXPECT_EQ(bob_hit.wood(), 1u);
+  EXPECT_TRUE(WaitResourceUpdate(*alice.client, update, [](const protocol::ResourceUpdate& u) {
+    return u.nodes_size() == 1 && u.nodes(0).hp() == 3;
+  }));
+
+  // 늦게 들어온 사람은 현재 체력을 입장 응답으로 받는다.
+  auto carol = Connect(server);
+  const auto joined = JoinRoom(*carol, code, "carol");
+  ASSERT_EQ(joined.result(), protocol::GAME_OK);
+  ASSERT_GT(joined.state().nodes_size(), 1);
+  EXPECT_EQ(joined.state().nodes(0).hp(), 3u);
+  EXPECT_EQ(joined.state().nodes(1).hp(), joined.state().nodes(1).max_hp());
+
+  EXPECT_EQ(server.game_stats().gathers_ok.load(), 2u);
+  EXPECT_EQ(server.game_stats().gathers_rejected.load(), 0u);
+}
+
+TEST(GameIntegration, GatheringFromTheStartPositionIsTooFarWithDefaultRange) {
+  TestServer server;  // 기본 허용 거리 200 cm
+  auto alice = CreateRoomPlayer(server, "alice", nullptr);
+  EXPECT_EQ(Gather(*alice.client, 1).result(), protocol::GAME_TOO_FAR);
+  EXPECT_EQ(Gather(*alice.client, 9999).result(), protocol::GAME_NODE_NOT_FOUND);
+  EXPECT_TRUE(PingWorksInGame(*alice.client)) << "거부해도 연결은 그대로";
+  EXPECT_EQ(server.game_stats().gathers_rejected.load(), 2u);
+}
+
+TEST(GameIntegration, GatheringOutsideARoomIsRejectedWithoutClosingTheConnection) {
+  TestServer server;
+  auto client = Connect(server);
+  EXPECT_EQ(Gather(*client, 1).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_TRUE(ServerStillWorks(server));
+  EXPECT_TRUE(client->SendPing(1, "x"));
+}
+
+TEST(GameIntegration, ADepletedNodeRespawnsOnTheRealTimerAndTheRoomIsTold) {
+  TestServer server(GatherServerConfig(/*tree_hp=*/1, /*respawn_ticks=*/10));  // 10틱 = 0.5초
+  auto alice = CreateRoomPlayer(server, "alice", nullptr);
+  ASSERT_EQ(Gather(*alice.client, 1).result(), protocol::GAME_OK);
+
+  protocol::ResourceUpdate update;
+  ASSERT_TRUE(WaitResourceUpdate(*alice.client, update, [](const protocol::ResourceUpdate& u) {
+    return u.nodes_size() == 1 && u.nodes(0).hp() == 0;
+  })) << "고갈 알림";
+  ASSERT_TRUE(WaitResourceUpdate(*alice.client, update, [](const protocol::ResourceUpdate& u) {
+    return u.nodes_size() == 1 && u.nodes(0).node_id() == 1 && u.nodes(0).hp() == 1;
+  })) << "재생 알림";
+  EXPECT_EQ(Gather(*alice.client, 1).result(), protocol::GAME_OK) << "재생한 노드를 다시 칠 수 있다";
+}
+
+TEST(GameIntegration, GatheringFlowsSurviveAnAbruptDisconnectOfAnotherPlayer) {
+  TestServer server(GatherServerConfig());
+  std::string code;
+  auto alice = CreateRoomPlayer(server, "alice", &code);
+  {
+    auto bob = JoinRoomPlayer(server, code, "bob");
+    ASSERT_EQ(Gather(*bob.client, 1).result(), protocol::GAME_OK);
+  }  // bob 연결이 갑자기 닫힌다
+  ASSERT_EQ(Gather(*alice.client, 2).result(), protocol::GAME_OK);
+  protocol::ResourceUpdate update;
+  EXPECT_TRUE(WaitResourceUpdate(*alice.client, update, [](const protocol::ResourceUpdate& u) {
+    return u.nodes_size() >= 1;
+  }));
+  EXPECT_TRUE(ServerStillWorks(server));
+}
 
 // 방에 사람이 있는 채로 서버를 멈춰도 제한 시간 안에 정상 종료한다(TestServer 소멸자가 확인한다).
 TEST(GameIntegration, ServerStopsCleanlyWhileRoomsAreActive) {

@@ -54,6 +54,11 @@ struct GameStats {
   Counter ticks_skipped{0};     // 처리가 밀려 건너뛴 틱 수
   Counter snapshots_sent{0};    // 보낸 스냅샷 수 (수신자 수만큼 센다)
   Counter max_tick_micros{0};   // 한 틱(계산과 전송 요청)에 걸린 시간의 최댓값 (마이크로초)
+  Counter gathers_ok{0};        // 받아들인 채집 수
+  Counter gathers_rejected{0};  // 거부한 채집 수 (방에 없음, 없는 노드, 고갈, 너무 멂, 쿨다운)
+  Counter nodes_depleted{0};    // 체력이 0이 된 노드 수
+  Counter nodes_respawned{0};   // 재생한 노드 수
+  Counter resource_updates_sent{0};  // 보낸 ResourceUpdate 수 (수신자 수만큼 센다)
 
   std::string Summary() const;
 };
@@ -71,6 +76,9 @@ class GameService {
   void HandleLeaveRoom(const std::shared_ptr<GameClient>& client);
   // 이동 입력. 응답이 없고, 방에 없거나 값이 잘못된 입력은 조용히 무시한다.
   void HandleMoveInput(const std::shared_ptr<GameClient>& client, const protocol::MoveInput& input);
+  // 자원 노드를 한 번 친다. 항상 GatherResponse(결과 코드와 내 인벤토리)를 돌려주고 연결은 유지한다.
+  // 성공하면 바뀐 노드는 같은 틱 끝에 ResourceUpdate로 방 전원에게 간다.
+  void HandleGather(const std::shared_ptr<GameClient>& client, const protocol::GatherRequest& request);
 
   // 연결이 끊겼을 때 부른다. 방에 있었다면 나간 것으로 처리하고 남은 사람에게 알린다.
   void OnDisconnect(std::uint64_t client_id);

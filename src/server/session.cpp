@@ -176,7 +176,7 @@ void Session::ProcessFrames() {
 }
 
 // 프레임의 메시지 ID를 보고 처리 함수로 보낸다. 서버가 요청으로 받는 ID는 Ping, 채팅(입장, 퇴장, 채팅, 기록
-// 조회), 게임(방 만들기, 방 입장, 방 나가기, 이동 입력)뿐이다. 알 수 없는 ID뿐 아니라 서버가 보내는 쪽
+// 조회), 게임(방 만들기, 방 입장, 방 나가기, 이동 입력, 채집)뿐이다. 알 수 없는 ID뿐 아니라 서버가 보내는 쪽
 // 메시지(PingResponse, ChatBroadcast, WorldSnapshot 등)가 들어와도 규약 위반으로 보고 연결을 닫는다.
 void Session::HandleFrame(const protocol::Frame& frame) {
   if (!protocol::IsClientRequestId(frame.message_id)) {
@@ -191,6 +191,7 @@ void Session::HandleFrame(const protocol::Frame& frame) {
     case protocol::MessageId::kJoinRoomRequest:
     case protocol::MessageId::kLeaveRoomRequest:
     case protocol::MessageId::kMoveInput:
+    case protocol::MessageId::kGatherRequest:
       HandleGameFrame(frame);
       return;
     default:
@@ -246,7 +247,7 @@ void Session::HandleChatFrame(const protocol::Frame& frame) {
   Close(CloseReason::kInternalError, "처리되지 않는 요청 ID " + std::to_string(frame.message_id));
 }
 
-// 방 만들기/입장/나가기/이동 입력을 파싱해 게임 서비스에 넘긴다. 파싱에 실패하면 프로토콜 위반이라
+// 방 만들기/입장/나가기/이동 입력/채집 요청을 파싱해 게임 서비스에 넘긴다. 파싱에 실패하면 프로토콜 위반이라
 // 연결을 닫는다. 규칙 위반(잘못된 코드, 가득 참 등)은 서비스가 결과 코드가 담긴 응답을 돌려주고 연결은
 // 유지한다. 이동 입력은 초당 수십 번 오므로 로그를 남기지 않는다.
 void Session::HandleGameFrame(const protocol::Frame& frame) {
@@ -281,6 +282,14 @@ void Session::HandleGameFrame(const protocol::Frame& frame) {
       game::protocol::MoveInput input;
       if (ParsePayload(frame, input, "MoveInput")) {
         game_.HandleMoveInput(self, input);
+      }
+      return;
+    }
+    case protocol::MessageId::kGatherRequest: {
+      game::protocol::GatherRequest request;
+      if (ParsePayload(frame, request, "GatherRequest")) {
+        Log(LogLevel::kDebug, "[채집요청] id=", id_, " node=", request.node_id());
+        game_.HandleGather(self, request);
       }
       return;
     }

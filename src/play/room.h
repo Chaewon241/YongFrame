@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "play/play_config.h"
+#include "play/resources.h"
 #include "play/world.h"
 
 namespace game::play {
@@ -20,6 +21,28 @@ struct Member {
   std::uint32_t player_id = 0;
   std::string nickname;
   std::uint32_t slot = 0;  // 시작 위치를 정하는 칸 번호. 나가면 비워 다음 사람이 쓴다.
+
+  // 자원 채집: 인벤토리와 쿨다운 기준. 방을 나가면 사라진다(저장하지 않는다).
+  std::uint32_t wood = 0;
+  std::uint32_t stone = 0;
+  bool has_gathered = false;
+  std::uint64_t last_gather_tick = 0;  // 받아들여진 마지막 채집이 있던 월드 틱
+};
+
+// 채집 시도의 결과. 프로토콜 코드(GameResult)로의 변환은 GameService가 한다.
+enum class GatherStatus {
+  kOk,
+  kNodeNotFound,
+  kNodeDepleted,
+  kTooFar,
+  kCooldown,
+  kNotInRoom,  // 이 방에 없는 연결
+};
+
+struct GatherOutcome {
+  GatherStatus status = GatherStatus::kNotInRoom;
+  std::uint32_t wood = 0;  // 시도 뒤 내 인벤토리 합계(성공/실패 모두)
+  std::uint32_t stone = 0;
 };
 
 class Room {
@@ -52,6 +75,13 @@ class Room {
   World& world() { return world_; }
   const World& world() const { return world_; }
 
+  ResourceField& resources() { return resources_; }
+  const ResourceField& resources() const { return resources_; }
+
+  // 연결이 자원 노드를 한 번 친다. 판정 순서: 방에 없음 -> 노드 없음 -> 고갈 -> 너무 멂 -> 쿨다운.
+  // 거부되면 아무 상태도 바뀌지 않는다. 시간은 이 방 월드의 틱 번호다.
+  GatherOutcome Gather(std::uint64_t client_id, std::uint32_t node_id);
+
  private:
   std::uint32_t LowestFreeSlot() const;
 
@@ -61,6 +91,7 @@ class Room {
   std::uint32_t next_player_id_ = 1;
   std::uint32_t host_player_id_ = 0;  // 0이면 방장 없음(빈 방)
   World world_;
+  ResourceField resources_;
 };
 
 }  // namespace game::play

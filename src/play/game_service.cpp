@@ -58,7 +58,9 @@ std::string GameStats::Summary() const {
       << " 입장=" << joins.load() << " 거부=" << requests_rejected.load()
       << " 입력반영=" << inputs_applied.load() << " 입력무시=" << inputs_ignored.load()
       << " 틱=" << ticks.load() << " 건너뜀=" << ticks_skipped.load()
-      << " 스냅샷=" << snapshots_sent.load() << " 최대틱처리=" << max_tick_micros.load() << "us";
+      << " 스냅샷=" << snapshots_sent.load() << " 최대틱처리=" << max_tick_micros.load() << "us"
+      << " 채집=" << gathers_ok.load() << " 채집거부=" << gathers_rejected.load()
+      << " 고갈=" << nodes_depleted.load() << " 재생=" << nodes_respawned.load();
   return out.str();
 }
 
@@ -95,6 +97,15 @@ protocol::RoomState GameService::MakeRoomState(const Room& room, std::uint32_t y
   state.set_host_player_id(room.host_player_id());
   for (const auto& member : room.members()) {
     *state.add_players() = MakePlayerInfo(member);
+  }
+  for (const auto& node : room.resources().nodes()) {
+    protocol::ResourceNode* out = state.add_nodes();
+    out->set_node_id(node.id);
+    out->set_kind(node.kind == ResourceKind::kTree ? protocol::RESOURCE_TREE : protocol::RESOURCE_ROCK);
+    out->set_x(node.x);
+    out->set_y(node.y);
+    out->set_hp(node.hp);
+    out->set_max_hp(node.max_hp);
   }
   return state;
 }
@@ -293,6 +304,61 @@ void GameService::HandleMoveInput(const std::shared_ptr<GameClient>& client, con
   }
 }
 
+// ---------------------------------------------------------------- 자원 채집
+
+void GameService::HandleGather(const std::shared_ptr<GameClient>& client, const protocol::GatherRequest& request) {
+  protocol::GatherResponse response;
+  response.set_node_id(request.node_id());
+
+  GatherOutcome outcome;  // 기본은 방에 없음
+  const auto connection = connections_.find(client->client_id());
+  if (connection != connections_.end()) {
+    const auto it = rooms_.find(connection->second.room_code);
+    if (it != rooms_.end()) {
+      Room& room = *it->second;
+      const bool was_depleted = [&] {
+        const ResourceNode* node = room.resources().Find(request.node_id());
+        return node != nullptr && node->hp == 0;
+      }();
+      outcome = room.Gather(client->client_id(), request.node_id());
+      if (outcome.status == GatherStatus::kOk) {
+        const ResourceNode* node = room.resources().Find(request.node_id());
+        if (!was_depleted && node != nullptr && node->hp == 0) {
+          ++stats_.nodes_depleted;
+        }
+      }
+    }
+  }
+
+  switch (outcome.status) {
+    case GatherStatus::kOk:
+      response.set_result(protocol::GAME_OK);
+      ++stats_.gathers_ok;
+      break;
+    case GatherStatus::kNodeNotFound:
+      response.set_result(protocol::GAME_NODE_NOT_FOUND);
+      break;
+    case GatherStatus::kNodeDepleted:
+      response.set_result(protocol::GAME_NODE_DEPLETED);
+      break;
+    case GatherStatus::kTooFar:
+      response.set_result(protocol::GAME_TOO_FAR);
+      break;
+    case GatherStatus::kCooldown:
+      response.set_result(protocol::GAME_GATHER_COOLDOWN);
+      break;
+    case GatherStatus::kNotInRoom:
+      response.set_result(protocol::GAME_NOT_IN_ROOM);
+      break;
+  }
+  if (outcome.status != GatherStatus::kOk) {
+    ++stats_.gathers_rejected;
+  }
+  response.set_wood(outcome.wood);
+  response.set_stone(outcome.stone);
+  client->Deliver(protocol::MessageId::kGatherResponse, response);
+}
+
 // ---------------------------------------------------------------- 틱
 
 void GameService::Tick(std::uint32_t steps) {
@@ -306,6 +372,7 @@ void GameService::Tick(std::uint32_t steps) {
   struct Outgoing {
     std::vector<std::shared_ptr<GameClient>> targets;
     protocol::WorldSnapshot snapshot;
+    protocol::ResourceUpdate resource_update;  // 바뀐 노드가 없으면 nodes가 비어 있고 보내지 않는다
   };
   std::vector<Outgoing> outgoing;
   outgoing.reserve(rooms_.size());
@@ -314,11 +381,19 @@ void GameService::Tick(std::uint32_t steps) {
     for (std::uint32_t i = 0; i < steps; ++i) {
       room.world().Step(dt);
     }
+    // 재생할 노드를 되살린다(따라잡기 틱이 합쳐져도 한 번에 현재 틱 기준으로 처리한다).
+    stats_.nodes_respawned += room.resources().Advance(room.world().tick());
     Outgoing out;
     out.targets = RecipientsOf(room, 0);
     if (out.targets.empty()) {
       continue;
     }
+    for (const auto& change : room.resources().TakeChanges()) {
+      protocol::ResourceNodeState* node = out.resource_update.add_nodes();
+      node->set_node_id(change.node_id);
+      node->set_hp(change.hp);
+    }
+    out.resource_update.set_tick(room.world().tick());
     out.snapshot.set_tick(room.world().tick());
     for (const auto& body : room.world().players()) {
       protocol::PlayerState* state = out.snapshot.add_players();
@@ -337,6 +412,10 @@ void GameService::Tick(std::uint32_t steps) {
     for (const auto& target : out.targets) {
       target->Deliver(protocol::MessageId::kWorldSnapshot, out.snapshot);
       ++stats_.snapshots_sent;
+      if (out.resource_update.nodes_size() > 0) {
+        target->Deliver(protocol::MessageId::kResourceUpdate, out.resource_update);
+        ++stats_.resource_updates_sent;
+      }
     }
   }
 

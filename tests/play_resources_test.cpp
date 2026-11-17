@@ -1,0 +1,451 @@
+// 자원 채집의 순수 로직 테스트: ResourceField(배치, 체력, 고갈, 재생)와 Room::Gather(거리, 쿨다운, 인벤토리).
+// 소켓도 시계도 없다. 시간은 월드 틱(Step 호출 횟수)으로만 흐른다. docs/stage4-gather.md 완료 기준 1~8.
+
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <set>
+
+#include "play/resources.h"
+#include "play/room.h"
+
+namespace game::play {
+namespace {
+
+constexpr float kDt = 0.05f;
+
+// 거리 판정에 걸리지 않도록 허용 거리를 맵 전체보다 크게 한 설정.
+PlayConfig WideRange() {
+  PlayConfig config;
+  config.gather_range_cm = 100000.0f;
+  return config;
+}
+
+void Advance(Room& room, std::uint32_t ticks) {
+  for (std::uint32_t i = 0; i < ticks; ++i) {
+    room.world().Step(kDt);
+    room.resources().Advance(room.world().tick());
+  }
+}
+
+// 플레이어 위치에서 노드까지의 거리(cm).
+double DistanceTo(const Room& room, std::uint32_t player_id, const ResourceNode& node) {
+  const PlayerBody* body = room.world().Find(player_id);
+  return std::hypot(static_cast<double>(body->x) - node.x, static_cast<double>(body->y) - node.y);
+}
+
+// ============================================================ 배치
+
+TEST(ResourceFieldTest, DefaultLayoutHasTheConfiguredNodes) {
+  const PlayConfig config;
+  const ResourceField field(config);
+  ASSERT_EQ(field.nodes().size(), config.tree_count + config.rock_count);
+  std::uint32_t trees = 0;
+  std::uint32_t rocks = 0;
+  for (std::size_t i = 0; i < field.nodes().size(); ++i) {
+    const ResourceNode& node = field.nodes()[i];
+    EXPECT_EQ(node.id, i + 1) << "번호는 1부터 차례로";
+    if (node.kind == ResourceKind::kTree) {
+      ++trees;
+      EXPECT_EQ(node.hp, config.tree_hp);
+      EXPECT_EQ(node.max_hp, config.tree_hp);
+    } else {
+      ++rocks;
+      EXPECT_EQ(node.hp, config.rock_hp);
+      EXPECT_EQ(node.max_hp, config.rock_hp);
+    }
+  }
+  EXPECT_EQ(trees, config.tree_count);
+  EXPECT_EQ(rocks, config.rock_count);
+}
+
+TEST(ResourceFieldTest, SameConfigGivesTheSameLayoutAndADifferentSeedDoesNot) {
+  const PlayConfig config;
+  const ResourceField a(config);
+  const ResourceField b(config);
+  ASSERT_EQ(a.nodes().size(), b.nodes().size());
+  for (std::size_t i = 0; i < a.nodes().size(); ++i) {
+    EXPECT_EQ(a.nodes()[i].x, b.nodes()[i].x) << i;
+    EXPECT_EQ(a.nodes()[i].y, b.nodes()[i].y) << i;
+    EXPECT_EQ(a.nodes()[i].kind, b.nodes()[i].kind) << i;
+  }
+
+  PlayConfig other = config;
+  other.layout_seed = config.layout_seed + 1;
+  const ResourceField c(other);
+  bool differs = false;
+  for (std::size_t i = 0; i < std::min(a.nodes().size(), c.nodes().size()); ++i) {
+    differs = differs || a.nodes()[i].x != c.nodes()[i].x || a.nodes()[i].y != c.nodes()[i].y;
+  }
+  EXPECT_TRUE(differs);
+}
+
+TEST(ResourceFieldTest, NodesStayInsideTheMapKeepApartAndLeaveTheSpawnAreaEmpty) {
+  const PlayConfig config;
+  const ResourceField field(config);
+  const double center_x = config.map_width_cm * 0.5;
+  const double center_y = config.map_height_cm * 0.5;
+  for (const ResourceNode& node : field.nodes()) {
+    EXPECT_GE(node.x, config.node_edge_margin_cm);
+    EXPECT_LE(node.x, config.map_width_cm - config.node_edge_margin_cm);
+    EXPECT_GE(node.y, config.node_edge_margin_cm);
+    EXPECT_LE(node.y, config.map_height_cm - config.node_edge_margin_cm);
+    EXPECT_GE(std::hypot(node.x - center_x, node.y - center_y), config.spawn_clear_radius_cm) << node.id;
+  }
+  for (std::size_t i = 0; i < field.nodes().size(); ++i) {
+    for (std::size_t j = i + 1; j < field.nodes().size(); ++j) {
+      const ResourceNode& a = field.nodes()[i];
+      const ResourceNode& b = field.nodes()[j];
+      EXPECT_GE(std::hypot(static_cast<double>(a.x) - b.x, static_cast<double>(a.y) - b.y), config.node_min_gap_cm)
+          << a.id << " " << b.id;
+    }
+  }
+}
+
+TEST(ResourceFieldTest, NoNodesWhenCountsOrHealthAreZero) {
+  PlayConfig config;
+  config.tree_count = 0;
+  config.rock_count = 0;
+  EXPECT_TRUE(ResourceField(config).nodes().empty());
+
+  PlayConfig no_health;
+  no_health.tree_hp = 0;
+  no_health.rock_hp = 0;
+  EXPECT_TRUE(ResourceField(no_health).nodes().empty());
+
+  PlayConfig tiny;  // 가장자리 여백이 맵보다 커서 둘 곳이 없다
+  tiny.map_width_cm = 300.0f;
+  tiny.map_height_cm = 300.0f;
+  EXPECT_TRUE(ResourceField(tiny).nodes().empty());
+}
+
+// ============================================================ 판정(Check)
+
+TEST(ResourceFieldTest, CheckSeparatesMissingDepletedTooFarAndOk) {
+  PlayConfig config;
+  config.tree_hp = 1;
+  ResourceField field(config);
+  const ResourceNode node = field.nodes()[0];
+
+  EXPECT_EQ(field.Check(0, node.x, node.y), NodeCheck::kNotFound);
+  EXPECT_EQ(field.Check(static_cast<std::uint32_t>(field.nodes().size()) + 1, node.x, node.y), NodeCheck::kNotFound);
+  EXPECT_EQ(field.Check(std::numeric_limits<std::uint32_t>::max(), node.x, node.y), NodeCheck::kNotFound);
+  EXPECT_EQ(field.Check(node.id, node.x, node.y), NodeCheck::kOk);
+  EXPECT_EQ(field.Check(node.id, node.x + config.gather_range_cm + 50.0f, node.y), NodeCheck::kTooFar);
+
+  field.Hit(node.id, 0);  // 체력 1이라 고갈된다
+  EXPECT_EQ(field.Check(node.id, node.x, node.y), NodeCheck::kDepleted);
+  // 고갈과 너무 멂이 겹치면 고갈이 먼저다(문서의 판정 순서)
+  EXPECT_EQ(field.Check(node.id, node.x + 5000.0f, node.y), NodeCheck::kDepleted);
+}
+
+TEST(ResourceFieldTest, ReachIsInclusiveAtTheExactRange) {
+  const PlayConfig base;
+  const ResourceField probe(base);
+  const ResourceNode node = probe.nodes()[0];
+
+  // 노드에서 x축으로 정확히 같은 거리만큼 떨어진 점. 두 float의 차이는 double로 정확히 구해진다.
+  const float query_x = node.x + 200.0f;
+  const double exact = static_cast<double>(query_x) - static_cast<double>(node.x);
+
+  PlayConfig at_range = base;
+  at_range.gather_range_cm = static_cast<float>(exact);
+  ASSERT_EQ(static_cast<double>(at_range.gather_range_cm), exact) << "경계값이 float로 정확히 표현되어야 한다";
+  EXPECT_EQ(ResourceField(at_range).Check(node.id, query_x, node.y), NodeCheck::kOk) << "허용 거리와 같으면 허용";
+
+  PlayConfig just_short = base;
+  just_short.gather_range_cm = std::nextafter(static_cast<float>(exact), 0.0f);
+  EXPECT_EQ(ResourceField(just_short).Check(node.id, query_x, node.y), NodeCheck::kTooFar) << "조금이라도 멀면 거부";
+}
+
+TEST(ResourceFieldTest, ReachUsesBothAxes) {
+  const PlayConfig config;
+  const ResourceField field(config);
+  const ResourceNode node = field.nodes()[0];
+  const float r = config.gather_range_cm;
+
+  // 한 축으로만 멀어도, 두 축이 합쳐서 멀어도 거리로 센다.
+  EXPECT_EQ(field.Check(node.id, node.x, node.y + 1.5f * r), NodeCheck::kTooFar) << "y축으로만 멂";
+  EXPECT_EQ(field.Check(node.id, node.x + 1.5f * r, node.y), NodeCheck::kTooFar) << "x축으로만 멂";
+  EXPECT_EQ(field.Check(node.id, node.x + 0.8f * r, node.y + 0.8f * r), NodeCheck::kTooFar)
+      << "각 축은 허용 거리 안이지만 대각선 거리는 밖";
+  EXPECT_EQ(field.Check(node.id, node.x - 0.6f * r, node.y - 0.6f * r), NodeCheck::kOk) << "대각선 거리 0.85r은 안";
+}
+
+// ============================================================ 체력, 고갈, 재생
+
+TEST(ResourceFieldTest, EachHitTakesOneHealthAndReturnsTheKind) {
+  PlayConfig config;
+  ResourceField field(config);
+  const ResourceNode tree = field.nodes()[0];
+  const ResourceNode rock = field.nodes()[config.tree_count];
+  ASSERT_EQ(tree.kind, ResourceKind::kTree);
+  ASSERT_EQ(rock.kind, ResourceKind::kRock);
+
+  EXPECT_EQ(field.Hit(tree.id, 10), ResourceKind::kTree);
+  EXPECT_EQ(field.Find(tree.id)->hp, config.tree_hp - 1);
+  EXPECT_EQ(field.Hit(rock.id, 10), ResourceKind::kRock);
+  EXPECT_EQ(field.Find(rock.id)->hp, config.rock_hp - 1);
+}
+
+TEST(ResourceFieldTest, HealthNeverGoesBelowZeroAndDepletedNodesAreNotHit) {
+  PlayConfig config;
+  config.tree_hp = 2;
+  ResourceField field(config);
+  const std::uint32_t id = field.nodes()[0].id;
+  field.Hit(id, 0);
+  field.Hit(id, 0);
+  EXPECT_EQ(field.Find(id)->hp, 0u);
+  field.Hit(id, 1);  // 검사 없이 불려도 0 아래로 내려가지 않는다
+  field.Hit(id, 1);
+  EXPECT_EQ(field.Find(id)->hp, 0u);
+  field.Hit(0, 1);  // 없는 번호는 무시
+  field.Hit(999999, 1);
+}
+
+TEST(ResourceFieldTest, RespawnsExactlyAfterTheConfiguredTicks) {
+  PlayConfig config;
+  config.tree_hp = 1;
+  config.respawn_ticks = 600;
+  ResourceField field(config);
+  const std::uint32_t id = field.nodes()[0].id;
+
+  field.Hit(id, 1000);  // 1000틱에 고갈
+  EXPECT_EQ(field.Find(id)->hp, 0u);
+  EXPECT_EQ(field.Advance(1599), 0u) << "599틱 뒤에는 아직";
+  EXPECT_EQ(field.Find(id)->hp, 0u);
+  EXPECT_EQ(field.Advance(1600), 1u) << "600틱 뒤에 재생";
+  EXPECT_EQ(field.Find(id)->hp, config.tree_hp);
+  EXPECT_EQ(field.Advance(1601), 0u) << "이미 재생했으면 다시 세지 않는다";
+}
+
+TEST(ResourceFieldTest, AdvanceWithNothingDepletedChangesNothing) {
+  ResourceField field(PlayConfig{});
+  EXPECT_EQ(field.Advance(100000), 0u);
+  EXPECT_FALSE(field.HasChanges());
+}
+
+TEST(ResourceFieldTest, ChangesAreCollectedOncePerNodeSortedAndThenCleared) {
+  PlayConfig config;
+  config.tree_hp = 3;
+  ResourceField field(config);
+  EXPECT_FALSE(field.HasChanges());
+  field.Hit(3, 0);
+  field.Hit(1, 0);
+  field.Hit(3, 0);  // 같은 노드를 두 번 쳐도 한 번만, 마지막 값으로
+  EXPECT_TRUE(field.HasChanges());
+
+  const auto changes = field.TakeChanges();
+  ASSERT_EQ(changes.size(), 2u);
+  EXPECT_EQ(changes[0].node_id, 1u);
+  EXPECT_EQ(changes[0].hp, 2u);
+  EXPECT_EQ(changes[1].node_id, 3u);
+  EXPECT_EQ(changes[1].hp, 1u);
+  EXPECT_FALSE(field.HasChanges());
+  EXPECT_TRUE(field.TakeChanges().empty());
+}
+
+TEST(ResourceFieldTest, RespawnIsReportedAsAChange) {
+  PlayConfig config;
+  config.tree_hp = 1;
+  config.respawn_ticks = 5;
+  ResourceField field(config);
+  field.Hit(1, 0);
+  field.TakeChanges();  // 고갈 알림은 이미 나갔다고 치고 비운다
+  field.Advance(5);
+  const auto changes = field.TakeChanges();
+  ASSERT_EQ(changes.size(), 1u);
+  EXPECT_EQ(changes[0].node_id, 1u);
+  EXPECT_EQ(changes[0].hp, config.tree_hp);
+}
+
+// ============================================================ Room::Gather
+
+TEST(RoomGatherTest, ClientsNotInTheRoomAreRejected) {
+  Room room("111111", WideRange());
+  room.AddMember(1, "alice");
+  EXPECT_EQ(room.Gather(99, 1).status, GatherStatus::kNotInRoom);
+  room.RemoveMember(1);
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kNotInRoom);
+}
+
+TEST(RoomGatherTest, TreesGiveWoodAndRocksGiveStoneToTheOneWhoHit) {
+  PlayConfig config = WideRange();
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+  room.AddMember(2, "bob");
+  const std::uint32_t tree = room.resources().nodes()[0].id;
+  const std::uint32_t rock = room.resources().nodes()[config.tree_count].id;
+
+  GatherOutcome out = room.Gather(1, tree);
+  EXPECT_EQ(out.status, GatherStatus::kOk);
+  EXPECT_EQ(out.wood, 1u);
+  EXPECT_EQ(out.stone, 0u);
+  EXPECT_EQ(room.resources().Find(tree)->hp, config.tree_hp - 1);
+
+  out = room.Gather(2, rock);
+  EXPECT_EQ(out.status, GatherStatus::kOk);
+  EXPECT_EQ(out.wood, 0u);
+  EXPECT_EQ(out.stone, 1u) << "인벤토리는 플레이어별이다";
+  EXPECT_EQ(room.FindByClient(1)->wood, 1u);
+  EXPECT_EQ(room.FindByClient(1)->stone, 0u);
+}
+
+TEST(RoomGatherTest, RejectionOrderIsMissingDepletedTooFarThenCooldown) {
+  PlayConfig config = WideRange();
+  config.tree_hp = 1;
+  config.rock_hp = 1;
+  Room room("111111", config);
+  const std::uint32_t player = room.AddMember(1, "alice");
+
+  // 가장 가까운 노드와 가장 먼 노드, 그 사이 허용 거리를 구한다.
+  const auto& nodes = room.resources().nodes();
+  const auto [near_it, far_it] = std::minmax_element(nodes.begin(), nodes.end(), [&](const auto& a, const auto& b) {
+    return DistanceTo(room, player, a) < DistanceTo(room, player, b);
+  });
+  const std::uint32_t near_id = near_it->id;
+  const std::uint32_t far_id = far_it->id;
+  ASSERT_LT(DistanceTo(room, player, *near_it), DistanceTo(room, player, *far_it));
+  const double middle = (DistanceTo(room, player, *near_it) + DistanceTo(room, player, *far_it)) / 2.0;
+
+  PlayConfig limited = config;
+  limited.gather_range_cm = static_cast<float>(middle);
+  Room limited_room("222222", limited);
+  limited_room.AddMember(1, "alice");
+
+  EXPECT_EQ(limited_room.Gather(1, 0).status, GatherStatus::kNodeNotFound);
+  EXPECT_EQ(limited_room.Gather(1, 9999).status, GatherStatus::kNodeNotFound);
+  EXPECT_EQ(limited_room.Gather(1, far_id).status, GatherStatus::kTooFar);
+  EXPECT_EQ(limited_room.Gather(1, near_id).status, GatherStatus::kOk);  // 이제 쿨다운 시작, near는 고갈
+
+  // 고갈 > 너무 멂 > 쿨다운 순서
+  EXPECT_EQ(limited_room.Gather(1, near_id).status, GatherStatus::kNodeDepleted) << "고갈이 쿨다운보다 먼저";
+  EXPECT_EQ(limited_room.Gather(1, far_id).status, GatherStatus::kTooFar) << "너무 멂이 쿨다운보다 먼저";
+  // 쿨다운에 걸리는 경우: 가까운 다른 노드를 찾는다
+  std::uint32_t other_near = 0;
+  for (const auto& node : limited_room.resources().nodes()) {
+    if (node.id != near_id && node.hp > 0 &&
+        limited_room.resources().Check(node.id, limited_room.world().Find(1)->x, limited_room.world().Find(1)->y) ==
+            NodeCheck::kOk) {
+      other_near = node.id;
+      break;
+    }
+  }
+  ASSERT_NE(other_near, 0u) << "허용 거리 안에 다른 노드가 하나는 있어야 쿨다운을 시험할 수 있다";
+  EXPECT_EQ(limited_room.Gather(1, other_near).status, GatherStatus::kCooldown);
+}
+
+TEST(RoomGatherTest, CooldownAllowsTheNextHitExactlyAfterTheConfiguredTicks) {
+  PlayConfig config = WideRange();
+  config.gather_cooldown_ticks = 10;
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+  room.AddMember(2, "bob");
+
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kCooldown) << "같은 틱의 두 번째";
+  EXPECT_EQ(room.Gather(2, 1).status, GatherStatus::kOk) << "다른 플레이어는 영향이 없다";
+
+  Advance(room, 9);
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kCooldown) << "9틱 뒤에는 아직";
+  Advance(room, 1);
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kOk) << "10틱 뒤에 허용(경계 포함)";
+}
+
+TEST(RoomGatherTest, RejectedRequestsChangeNothingNotEvenTheCooldownBase) {
+  PlayConfig config = WideRange();
+  config.gather_cooldown_ticks = 10;
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+
+  ASSERT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
+  const std::uint32_t hp_after = room.resources().Find(1)->hp;
+  Advance(room, 5);
+  for (int i = 0; i < 3; ++i) {
+    const GatherOutcome out = room.Gather(1, 1);  // 쿨다운 중 거부
+    EXPECT_EQ(out.status, GatherStatus::kCooldown);
+    EXPECT_EQ(out.wood, 1u) << "거부 응답도 현재 인벤토리를 담는다";
+  }
+  EXPECT_EQ(room.resources().Find(1)->hp, hp_after);
+  EXPECT_EQ(room.FindByClient(1)->wood, 1u);
+
+  Advance(room, 5);  // 첫 채집으로부터 10틱. 거부가 기준 틱을 밀었다면 아직 쿨다운이다.
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
+}
+
+TEST(RoomGatherTest, DepletedNodeRespawnsAfterExactlyTheConfiguredTicks) {
+  PlayConfig config = WideRange();
+  config.tree_hp = 1;
+  config.respawn_ticks = 600;
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+
+  ASSERT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
+  EXPECT_EQ(room.resources().Find(1)->hp, 0u);
+  Advance(room, 599);
+  EXPECT_EQ(room.resources().Find(1)->hp, 0u);
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kNodeDepleted);
+  Advance(room, 1);
+  EXPECT_EQ(room.resources().Find(1)->hp, 1u);
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kOk) << "재생한 노드는 다시 칠 수 있다";
+}
+
+TEST(RoomGatherTest, WhenFourPlayersHitTheLastHealthInTheSameTickExactlyOneSucceeds) {
+  PlayConfig config = WideRange();
+  config.tree_hp = 1;
+  Room room("111111", config);
+  for (std::uint64_t id = 1; id <= 4; ++id) room.AddMember(id, "p" + std::to_string(id));
+
+  int ok = 0;
+  int depleted = 0;
+  for (std::uint64_t id = 1; id <= 4; ++id) {
+    const GatherStatus status = room.Gather(id, 1).status;
+    ok += status == GatherStatus::kOk;
+    depleted += status == GatherStatus::kNodeDepleted;
+  }
+  EXPECT_EQ(ok, 1);
+  EXPECT_EQ(depleted, 3);
+  EXPECT_EQ(room.resources().Find(1)->hp, 0u);
+  std::uint32_t total_wood = 0;
+  for (const auto& member : room.members()) total_wood += member.wood;
+  EXPECT_EQ(total_wood, 1u) << "마지막 한 번의 몫은 한 명만 받는다";
+}
+
+TEST(RoomGatherTest, RoomsDoNotShareNodesOrInventories) {
+  PlayConfig config = WideRange();
+  config.tree_hp = 1;
+  Room a("111111", config);
+  Room b("222222", config);
+  a.AddMember(1, "alice");
+  b.AddMember(1, "alice");  // 같은 client_id와 같은 node_id를 다른 방에서 쓴다
+
+  ASSERT_EQ(a.Gather(1, 1).status, GatherStatus::kOk);
+  EXPECT_EQ(a.resources().Find(1)->hp, 0u);
+  EXPECT_EQ(b.resources().Find(1)->hp, 1u);
+  EXPECT_EQ(b.FindByClient(1)->wood, 0u);
+  EXPECT_EQ(b.Gather(1, 1).status, GatherStatus::kOk);
+}
+
+TEST(RoomGatherTest, TheInventoryIsLostWhenLeavingAndStartsEmptyOnRejoin) {
+  Room room("111111", WideRange());
+  room.AddMember(1, "alice");
+  ASSERT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
+  room.RemoveMember(1);
+  room.AddMember(1, "alice");
+  EXPECT_EQ(room.FindByClient(1)->wood, 0u);
+  EXPECT_EQ(room.Gather(1, 1).wood, 1u);
+}
+
+TEST(RoomGatherTest, WorksInARoomWithNoNodes) {
+  PlayConfig config = WideRange();
+  config.tree_count = 0;
+  config.rock_count = 0;
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kNodeNotFound);
+}
+
+}  // namespace
+}  // namespace game::play

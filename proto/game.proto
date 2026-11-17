@@ -14,11 +14,31 @@ enum GameResult {
   GAME_NOT_IN_ROOM = 6;        // 방에 없는 연결이 나가기
   GAME_NICKNAME_TAKEN = 7;     // 같은 방에 같은 닉네임이 이미 있음
   GAME_SERVER_BUSY = 8;        // 방 수 상한, 방 코드 발급 실패
+  // 자원 채집 (docs/stage4-gather.md)
+  GAME_NODE_NOT_FOUND = 9;     // 그 번호의 자원 노드가 없음
+  GAME_NODE_DEPLETED = 10;     // 노드가 고갈되어 재생을 기다리는 중
+  GAME_TOO_FAR = 11;           // 서버가 아는 내 위치에서 채집 허용 거리 밖
+  GAME_GATHER_COOLDOWN = 12;   // 채집 쿨다운 중
 }
 
 message PlayerInfo {
   uint32 player_id = 1;  // 방 안에서 부여한 번호. 방이 닫힐 때까지 유지, 재사용 안 함
   string nickname = 2;
+}
+
+enum ResourceKind {
+  RESOURCE_TREE = 0;  // 채집하면 목재
+  RESOURCE_ROCK = 1;  // 채집하면 석재
+}
+
+// 맵에 고정된 자원 노드 하나. 위치와 종류는 방이 닫힐 때까지 바뀌지 않고, 체력만 바뀐다.
+message ResourceNode {
+  uint32 node_id = 1;  // 방 안에서 1부터 부여, 방이 닫힐 때까지 같다
+  ResourceKind kind = 2;
+  float x = 3;         // cm
+  float y = 4;         // cm
+  uint32 hp = 5;       // 남은 체력. 0이면 고갈(재생을 기다리는 중)
+  uint32 max_hp = 6;
 }
 
 // 방 전체의 현재 상태. 만들기/입장 응답에 담긴다.
@@ -27,6 +47,7 @@ message RoomState {
   uint32 your_player_id = 2;
   uint32 host_player_id = 3;
   repeated PlayerInfo players = 4;  // 나를 포함한 현재 접속자 (입장한 순서)
+  repeated ResourceNode nodes = 5;  // 방의 모든 자원 노드와 현재 체력
 }
 
 message CreateRoomRequest { string nickname = 1; }
@@ -72,6 +93,27 @@ message PlayerState {
   float x = 2;                   // cm
   float y = 3;                   // cm
   uint32 last_input_seq = 4;     // 서버가 마지막으로 반영한 이 플레이어의 입력 번호 (없으면 0)
+}
+
+// 자원 노드를 한 번 친다. 서버가 서버가 아는 내 위치, 거리, 쿨다운을 판정한다.
+message GatherRequest { uint32 node_id = 1; }
+// 결과와 내 인벤토리 합계(성공/실패 모두 현재 값).
+message GatherResponse {
+  GameResult result = 1;
+  uint32 node_id = 2;
+  uint32 wood = 3;
+  uint32 stone = 4;
+}
+
+message ResourceNodeState {
+  uint32 node_id = 1;
+  uint32 hp = 2;  // 0이면 고갈
+}
+
+// 한 틱 동안 체력이 바뀐 노드만 모아 방 전원에게 보낸다(채집한 본인 포함). 바뀐 것이 없으면 보내지 않는다.
+message ResourceUpdate {
+  uint64 tick = 1;
+  repeated ResourceNodeState nodes = 2;
 }
 
 // 틱마다 방 전체 상태를 보낸다.

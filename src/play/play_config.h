@@ -23,6 +23,19 @@ struct PlayConfig {
   // 방 코드를 뽑아 이미 있는 코드와 겹치면 다시 뽑는 최대 횟수. 다 겹치면 서버가 바쁘다고 답한다.
   int room_code_attempts = 32;
 
+  // ---- 자원 채집 (docs/stage4-gather.md). 임의 기본값 ----
+  std::uint32_t tree_count = 30;
+  std::uint32_t tree_hp = 5;  // 한 번 칠 때마다 1 감소
+  std::uint32_t rock_count = 20;
+  std::uint32_t rock_hp = 8;
+  float gather_range_cm = 200.0f;            // 서버가 아는 플레이어 위치와 노드 중심의 거리(경계 포함)
+  std::uint32_t gather_cooldown_ticks = 10;  // 플레이어별. 받아들여진 마지막 채집으로부터
+  std::uint32_t respawn_ticks = 600;         // 고갈된 틱으로부터 이만큼 지나면 체력이 가득 차 돌아온다
+  float node_min_gap_cm = 150.0f;            // 노드 사이 최소 거리
+  float node_edge_margin_cm = 200.0f;        // 맵 가장자리에서 이만큼 안쪽에만 둔다
+  float spawn_clear_radius_cm = 500.0f;      // 맵 중앙(시작 위치) 이 반지름 안에는 두지 않는다
+  std::uint64_t layout_seed = 20240607;      // 배치 생성 시드. 같은 설정이면 모든 방이 같은 배치
+
   float TickSeconds() const { return 1.0f / static_cast<float>(tick_rate_hz == 0 ? 1 : tick_rate_hz); }
 };
 

@@ -26,8 +26,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -79,6 +81,10 @@ const char* ResultText(game::protocol::GameResult code) {
     case game::protocol::GAME_NOT_IN_ROOM: return "방에 있지 않습니다";
     case game::protocol::GAME_NICKNAME_TAKEN: return "그 방에 같은 닉네임이 이미 있습니다";
     case game::protocol::GAME_SERVER_BUSY: return "서버가 혼잡합니다 (방 수 상한 등)";
+    case game::protocol::GAME_NODE_NOT_FOUND: return "그 번호의 자원 노드가 없습니다";
+    case game::protocol::GAME_NODE_DEPLETED: return "노드가 고갈되었습니다 (재생을 기다리는 중)";
+    case game::protocol::GAME_TOO_FAR: return "너무 멀리 있습니다 (서버가 아는 내 위치 기준)";
+    case game::protocol::GAME_GATHER_COOLDOWN: return "채집 쿨다운 중입니다";
     default: break;
   }
   return "알 수 없는 결과";
@@ -131,6 +137,8 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
                 << "  /move <dx> <dy>         이동 방향 (길이 1 이하, 예: /move 1 0). 서버가 계속 그 방향으로 움직인다\n"
                 << "  /stop                   정지 (방향 0, 0)\n"
                 << "  /snap <N>               N틱마다 위치 출력 (0이면 끔, 20이면 초당 1번)\n"
+                << "  /nodes                  자원 노드 목록(번호, 종류, 위치, 체력, 내 위치에서의 거리)\n"
+                << "  /gather [번호]          노드를 한 번 친다 (번호를 생략하면 가장 가까운 살아 있는 노드)\n"
                 << "  /ping                   서버 응답 확인\n"
                 << "  /wait <밀리초>          다음 줄 처리를 늦춤 (스크립트용)\n"
                 << "  /quit                   종료\n";
@@ -169,6 +177,21 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
       }
       snapshot_every_ = every;
       std::cout << "위치 출력 주기: " << (every == 0 ? "끔" : std::to_string(every) + "틱마다") << "\n";
+    } else if (command == "/nodes") {
+      PrintNodes();
+    } else if (command == "/gather") {
+      std::uint32_t node_id = 0;
+      if (!(words >> node_id)) {
+        node_id = NearestAliveNode();
+        if (node_id == 0) {
+          std::cout << "살아 있는 노드가 없거나 아직 방 상태/위치를 받지 못했습니다.\n";
+          return;
+        }
+        std::cout << "가장 가까운 노드 " << node_id << "번을 칩니다.\n";
+      }
+      game::protocol::GatherRequest request;
+      request.set_node_id(node_id);
+      Send(MessageId::kGatherRequest, request);
     } else if (command == "/ping") {
       game::protocol::PingRequest request;
       request.set_request_id(++ping_sequence_);
@@ -235,8 +258,53 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
     DoRead();
   }
 
+  struct NodeInfo {
+    game::protocol::ResourceKind kind = game::protocol::RESOURCE_TREE;
+    float x = 0.0f;
+    float y = 0.0f;
+    std::uint32_t hp = 0;
+    std::uint32_t max_hp = 0;
+  };
+
+  double DistanceFromMe(const NodeInfo& node) const {
+    return std::hypot(static_cast<double>(my_x_) - node.x, static_cast<double>(my_y_) - node.y);
+  }
+
+  std::uint32_t NearestAliveNode() const {
+    std::uint32_t best = 0;
+    double best_distance = 0.0;
+    for (const auto& [id, node] : nodes_) {
+      if (node.hp == 0) continue;
+      const double distance = DistanceFromMe(node);
+      if (best == 0 || distance < best_distance) {
+        best = id;
+        best_distance = distance;
+      }
+    }
+    return best;
+  }
+
+  void PrintNodes() const {
+    if (nodes_.empty()) {
+      std::cout << "노드 정보가 없습니다 (방에 들어가야 받습니다).\n";
+      return;
+    }
+    std::cout << std::fixed << std::setprecision(0);
+    for (const auto& [id, node] : nodes_) {
+      std::cout << "  " << id << "번 " << (node.kind == game::protocol::RESOURCE_TREE ? "나무" : "돌") << " @(" << node.x
+                << ", " << node.y << ") 체력 " << node.hp << '/' << node.max_hp << " 거리 " << DistanceFromMe(node)
+                << "\n";
+    }
+    std::cout << std::defaultfloat;
+  }
+
   void PrintState(const game::protocol::RoomState& state) {
     my_player_id_ = state.your_player_id();
+    nodes_.clear();
+    for (const auto& node : state.nodes()) {
+      nodes_[node.node_id()] = NodeInfo{node.kind(), node.x(), node.y(), node.hp(), node.max_hp()};
+    }
+    std::cout << "  자원 노드 " << nodes_.size() << "개 (/nodes 로 목록)\n";
     std::cout << "  방 코드 " << state.room_code() << " / 내 번호 " << state.your_player_id() << " / 방장 번호 "
               << state.host_player_id() << "\n  접속자:";
     for (const auto& player : state.players()) {
@@ -301,6 +369,12 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
       case MessageId::kWorldSnapshot: {
         game::protocol::WorldSnapshot s;
         if (!parse(s)) break;
+        for (const auto& p : s.players()) {
+          if (p.player_id() == my_player_id_) {
+            my_x_ = p.x();
+            my_y_ = p.y();
+          }
+        }
         if (snapshot_every_ == 0 || s.tick() % snapshot_every_ != 0) {
           return;  // 초당 20개가 쏟아지므로 일부만 출력한다
         }
@@ -310,6 +384,24 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
           std::cout << ' ' << p.player_id() << (p.player_id() == my_player_id_ ? "(나)" : "") << "@(" << p.x() << ", " << p.y() << ")";
         }
         std::cout << std::defaultfloat << "\n";
+        return;
+      }
+      case MessageId::kGatherResponse: {
+        game::protocol::GatherResponse r;
+        if (!parse(r)) break;
+        std::cout << "[채집] 노드 " << r.node_id() << ": " << ResultText(r.result()) << " / 내 목재 " << r.wood()
+                  << " 석재 " << r.stone() << "\n";
+        return;
+      }
+      case MessageId::kResourceUpdate: {
+        game::protocol::ResourceUpdate u;
+        if (!parse(u)) break;
+        for (const auto& changed : u.nodes()) {
+          auto it = nodes_.find(changed.node_id());
+          if (it != nodes_.end()) it->second.hp = changed.hp();
+          std::cout << "[노드] 틱 " << u.tick() << ": " << changed.node_id() << "번 체력 " << changed.hp()
+                    << (changed.hp() == 0 ? " (고갈)" : "") << "\n";
+        }
         return;
       }
       case MessageId::kPingResponse: {
@@ -372,6 +464,9 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
   std::uint32_t move_sequence_ = 0;
   std::uint32_t my_player_id_ = 0;
   std::uint32_t snapshot_every_ = 20;
+  float my_x_ = 0.0f;  // 마지막 스냅샷에서 받은 내 위치
+  float my_y_ = 0.0f;
+  std::map<std::uint32_t, NodeInfo> nodes_;  // 방 상태와 ResourceUpdate로 유지하는 노드 목록
 };
 
 bool ParseArgs(int argc, char** argv, Options& options, bool& help) {

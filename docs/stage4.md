@@ -49,8 +49,11 @@
 | 106 | `MoveInput{sequence, dir_x, dir_y}` | C→S | 이동 방향(응답 없음). 방에 없으면 무시 |
 | 110 | `RoomEvent{kind, player, host_player_id}` | S→C | 입장, 퇴장, 방장 변경 알림 |
 | 111 | `WorldSnapshot{tick, players[{player_id, x, y, last_input_seq}]}` | S→C | 틱마다 방 전체 상태 |
+| 107 | `GatherRequest{node_id}` | C→S | 자원 채집(확장 1). 규칙은 [stage4-gather.md](stage4-gather.md) |
+| 108 | `GatherResponse{result, node_id, wood, stone}` | S→C | 결과 코드와 내 인벤토리 |
+| 112 | `ResourceUpdate{tick, nodes[{node_id, hp}]}` | S→C | 바뀐 노드가 있는 틱에만 |
 
-결과 코드(`GameResult`): `GAME_OK`, `GAME_INVALID_NICKNAME`(채팅과 같은 닉네임 규칙), `GAME_INVALID_ROOM_CODE`(6자리 숫자가 아님), `GAME_ROOM_NOT_FOUND`, `GAME_ROOM_FULL`, `GAME_ALREADY_IN_ROOM`, `GAME_NOT_IN_ROOM`, `GAME_NICKNAME_TAKEN`(같은 방에 같은 닉네임), `GAME_SERVER_BUSY`(방 수 상한, 코드 발급 실패).
+결과 코드(`GameResult`): `GAME_OK`, `GAME_INVALID_NICKNAME`(채팅과 같은 닉네임 규칙), `GAME_INVALID_ROOM_CODE`(6자리 숫자가 아님), `GAME_ROOM_NOT_FOUND`, `GAME_ROOM_FULL`, `GAME_ALREADY_IN_ROOM`, `GAME_NOT_IN_ROOM`, `GAME_NICKNAME_TAKEN`(같은 방에 같은 닉네임), `GAME_SERVER_BUSY`(방 수 상한, 코드 발급 실패). 채집 확장에서 `GAME_NODE_NOT_FOUND`(9), `GAME_NODE_DEPLETED`(10), `GAME_TOO_FAR`(11), `GAME_GATHER_COOLDOWN`(12)이 더해졌다. `RoomState`에는 `nodes`(필드 5)가 더해졌다. 모두 하위 호환이다.
 
 규칙
 

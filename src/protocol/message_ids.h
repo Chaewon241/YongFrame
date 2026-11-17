@@ -32,6 +32,11 @@ enum class MessageId : std::uint16_t {
   kMoveInput = 106,  // 응답 없음
   kRoomEvent = 110,
   kWorldSnapshot = 111,
+
+  // 4단계 확장: 자원 채집 (docs/stage4-gather.md)
+  kGatherRequest = 107,
+  kGatherResponse = 108,
+  kResourceUpdate = 112,
 };
 
 // enum class는 정수로 자동 변환되지 않으므로, 프레임의 message_id(uint16_t)와 비교할 때 쓴다.
@@ -61,6 +66,9 @@ inline constexpr bool IsKnownMessageId(std::uint16_t id) {
     case MessageId::kMoveInput:
     case MessageId::kRoomEvent:
     case MessageId::kWorldSnapshot:
+    case MessageId::kGatherRequest:
+    case MessageId::kGatherResponse:
+    case MessageId::kResourceUpdate:
       return true;
   }
   return false;
@@ -79,6 +87,7 @@ inline constexpr bool IsClientRequestId(std::uint16_t id) {
     case MessageId::kJoinRoomRequest:
     case MessageId::kLeaveRoomRequest:
     case MessageId::kMoveInput:
+    case MessageId::kGatherRequest:
       return true;
     default:
       return false;
