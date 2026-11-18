@@ -19,6 +19,33 @@ enum GameResult {
   GAME_NODE_DEPLETED = 10;     // 노드가 고갈되어 재생을 기다리는 중
   GAME_TOO_FAR = 11;           // 서버가 아는 내 위치에서 채집 허용 거리 밖
   GAME_GATHER_COOLDOWN = 12;   // 채집 쿨다운 중
+  // 건설 (docs/content-roadmap.md)
+  GAME_BUILD_INVALID_TYPE = 13;     // 모르는 건물 종류
+  GAME_BUILD_BLOCKED = 14;          // 맵 밖이거나 구조물, 노드, 플레이어와 겹침, 잘못된 좌표
+  GAME_NOT_ENOUGH_RESOURCES = 15;   // 비용(목재, 석재)이 모자람
+  GAME_BUILD_TOO_FAR = 16;          // 서버가 아는 내 위치에서 건설 허용 거리 밖
+  GAME_STRUCTURE_LIMIT = 17;        // 방의 구조물 수 상한
+}
+
+enum StructureType {
+  STRUCTURE_HOUSE = 0;
+}
+
+enum StructureState {
+  STRUCTURE_BUILDING = 0;  // 건설 중(충돌은 처음부터 있다)
+  STRUCTURE_COMPLETE = 1;
+}
+
+// 맵에 놓인 건물 하나. 축에 정렬된 직사각형이며 (x, y)는 중심이다.
+message Structure {
+  uint32 structure_id = 1;  // 방 안에서 1부터 부여, 방이 닫힐 때까지 같다
+  StructureType type = 2;
+  float x = 3;              // 중심, cm
+  float y = 4;
+  float width = 5;          // cm (x 방향)
+  float height = 6;         // cm (y 방향)
+  StructureState state = 7;
+  uint64 ready_tick = 8;    // 건설 중이면 완료되는 틱, 완료되었으면 완료된 틱
 }
 
 message PlayerInfo {
@@ -48,6 +75,7 @@ message RoomState {
   uint32 host_player_id = 3;
   repeated PlayerInfo players = 4;  // 나를 포함한 현재 접속자 (입장한 순서)
   repeated ResourceNode nodes = 5;  // 방의 모든 자원 노드와 현재 체력
+  repeated Structure structures = 6;  // 방의 모든 구조물(건설 중 포함)
 }
 
 message CreateRoomRequest { string nickname = 1; }
@@ -114,6 +142,26 @@ message ResourceNodeState {
 message ResourceUpdate {
   uint64 tick = 1;
   repeated ResourceNodeState nodes = 2;
+}
+
+// 건물을 짓는다. (x, y)는 짓고 싶은 중심이며 서버가 격자에 맞춘다. 서버가 거리, 겹침, 비용을 판정한다.
+message BuildRequest {
+  StructureType structure_type = 1;
+  float x = 2;
+  float y = 3;
+}
+// 결과와 내 인벤토리 합계(성공/실패 모두 현재 값). 성공하면 structure_id가 채워진다.
+message BuildResponse {
+  GameResult result = 1;
+  uint32 structure_id = 2;
+  uint32 wood = 3;
+  uint32 stone = 4;
+}
+
+// 한 틱 동안 새로 생기거나 상태가 바뀐 구조물을 방 전원에게 보낸다(건설한 본인 포함). 바뀐 것이 없으면 보내지 않는다.
+message StructureUpdate {
+  uint64 tick = 1;
+  repeated Structure structures = 2;
 }
 
 // 틱마다 방 전체 상태를 보낸다.

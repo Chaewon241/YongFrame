@@ -59,6 +59,10 @@ struct GameStats {
   Counter nodes_depleted{0};    // 체력이 0이 된 노드 수
   Counter nodes_respawned{0};   // 재생한 노드 수
   Counter resource_updates_sent{0};  // 보낸 ResourceUpdate 수 (수신자 수만큼 센다)
+  Counter builds_ok{0};              // 받아들인 건설 수
+  Counter builds_rejected{0};        // 거부한 건설 수 (방에 없음, 종류, 상한, 너무 멂, 겹침, 자원 부족)
+  Counter structures_completed{0};   // 건설이 끝난 구조물 수
+  Counter structure_updates_sent{0}; // 보낸 StructureUpdate 수 (수신자 수만큼 센다)
 
   std::string Summary() const;
 };
@@ -79,6 +83,9 @@ class GameService {
   // 자원 노드를 한 번 친다. 항상 GatherResponse(결과 코드와 내 인벤토리)를 돌려주고 연결은 유지한다.
   // 성공하면 바뀐 노드는 같은 틱 끝에 ResourceUpdate로 방 전원에게 간다.
   void HandleGather(const std::shared_ptr<GameClient>& client, const protocol::GatherRequest& request);
+  // 건물을 짓는다. 항상 BuildResponse(결과 코드와 내 인벤토리)를 돌려주고 연결은 유지한다. 성공하면 새 구조물은
+  // 같은 틱 끝에 StructureUpdate로 방 전원에게 간다.
+  void HandleBuild(const std::shared_ptr<GameClient>& client, const protocol::BuildRequest& request);
 
   // 연결이 끊겼을 때 부른다. 방에 있었다면 나간 것으로 처리하고 남은 사람에게 알린다.
   void OnDisconnect(std::uint64_t client_id);

@@ -960,6 +960,192 @@ TEST_F(GatherServiceTest, ALeaverDuringUpdateDeliveryDoesNotBreakTheTick) {
   EXPECT_EQ(service_.stats().current_players.load(), 1u);
 }
 
+// ============================================================ 집 짓기 (docs/content-roadmap.md)
+
+protocol::BuildResponse DoBuild(GameService& service, const ClientPtr& client, float x, float y, std::uint32_t type = 0) {
+  protocol::BuildRequest request;
+  request.set_structure_type(static_cast<protocol::StructureType>(type));
+  request.set_x(x);
+  request.set_y(y);
+  service.HandleBuild(client, request);
+  return client->Last<protocol::BuildResponse>(MessageId::kBuildResponse);
+}
+
+// 쿨다운 없이 자원을 모을 수 있고(나무 1번 20개, 돌 31번 10개), 건설 허용 거리는 500 cm인 설정.
+class BuildServiceTest : public GameServiceTest {
+ protected:
+  BuildServiceTest() : GameServiceTest(MakeConfig()) {}
+  static PlayConfig MakeConfig() {
+    PlayConfig config;
+    config.gather_range_cm = 100000.0f;
+    config.gather_cooldown_ticks = 0;
+    config.tree_hp = 1000;
+    config.rock_hp = 1000;
+    return config;
+  }
+
+  void Equip(const ClientPtr& client, int wood = 20, int stone = 10) {
+    for (int i = 0; i < wood; ++i) ASSERT_EQ(DoGather(service_, client, 1).result(), protocol::GAME_OK);
+    for (int i = 0; i < stone; ++i) ASSERT_EQ(DoGather(service_, client, 31).result(), protocol::GAME_OK);
+  }
+
+  // alice(1)가 방을 만들고 bob(2)이 입장한다.
+  std::string TwoPlayers() {
+    const std::string code = CreateRoomWith(1, "alice");
+    auto bob = NewClient(2);
+    EXPECT_EQ(Join(bob, code, "bob").result(), protocol::GAME_OK);
+    return code;
+  }
+};
+
+TEST_F(BuildServiceTest, BuildingRepliesAtOnceAndTheRoomLearnsOnTheNextTickThenOnCompletion) {
+  TwoPlayers();
+  auto alice = clients_[1];
+  auto bob = clients_[2];
+  Equip(alice);
+
+  const auto response = DoBuild(service_, alice, 2400.0f, 2800.0f);
+  EXPECT_EQ(response.result(), protocol::GAME_OK);
+  EXPECT_EQ(response.structure_id(), 1u);
+  EXPECT_EQ(response.wood(), 0u) << "비용만큼 차감된 현재 인벤토리";
+  EXPECT_EQ(response.stone(), 0u);
+  EXPECT_EQ(alice->CountOf(MessageId::kStructureUpdate), 0u) << "알림은 틱 끝에 간다";
+  EXPECT_EQ(service_.stats().builds_ok.load(), 1u);
+
+  service_.Tick();
+  for (const auto& client : {alice, bob}) {
+    ASSERT_EQ(client->CountOf(MessageId::kStructureUpdate), 1u) << "짓는 본인과 다른 사람 모두 받는다";
+    const auto update = client->Nth<protocol::StructureUpdate>(MessageId::kStructureUpdate);
+    ASSERT_EQ(update.structures_size(), 1);
+    EXPECT_EQ(update.structures(0).state(), protocol::STRUCTURE_BUILDING);
+    EXPECT_EQ(update.structures(0).ready_tick(), 100u);
+  }
+
+  for (int i = 0; i < 98; ++i) service_.Tick();  // 99틱
+  EXPECT_EQ(bob->CountOf(MessageId::kStructureUpdate), 1u) << "99틱까지는 완공 알림이 없다";
+  service_.Tick();  // 100틱
+  ASSERT_EQ(bob->CountOf(MessageId::kStructureUpdate), 2u);
+  const auto done = bob->Last<protocol::StructureUpdate>(MessageId::kStructureUpdate);
+  EXPECT_EQ(done.tick(), 100u);
+  EXPECT_EQ(done.structures(0).state(), protocol::STRUCTURE_COMPLETE);
+  EXPECT_EQ(service_.stats().structures_completed.load(), 1u);
+
+  service_.Tick();
+  EXPECT_EQ(bob->CountOf(MessageId::kStructureUpdate), 2u) << "바뀐 것이 없으면 보내지 않는다";
+}
+
+TEST_F(BuildServiceTest, EachRejectionHasItsOwnCodeAndChangesNothing) {
+  TwoPlayers();
+  auto alice = clients_[1];
+  EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_ENOUGH_RESOURCES);
+  Equip(alice);
+
+  EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f, 5).result(), protocol::GAME_BUILD_INVALID_TYPE);
+  EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2400.0f).result(), protocol::GAME_BUILD_BLOCKED);
+  EXPECT_EQ(DoBuild(service_, alice, 4500.0f, 4500.0f).result(), protocol::GAME_BUILD_TOO_FAR);
+  const auto rejected = DoBuild(service_, alice, 4500.0f, 4500.0f);
+  EXPECT_EQ(rejected.wood(), 20u) << "거부 응답도 현재 인벤토리를 담는다";
+  EXPECT_EQ(rejected.stone(), 10u);
+
+  service_.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kStructureUpdate), 0u) << "거부는 알림을 만들지 않는다";
+  EXPECT_EQ(service_.stats().builds_ok.load(), 0u);
+  EXPECT_EQ(service_.stats().builds_rejected.load(), 5u);
+  EXPECT_EQ(service_.room_count(), 1u) << "연결도 방도 그대로";
+}
+
+TEST_F(BuildServiceTest, BuildingOutsideARoomIsRejectedAndKeepsTheConnection) {
+  auto loner = NewClient(7);
+  EXPECT_EQ(DoBuild(service_, loner, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_EQ(service_.stats().builds_rejected.load(), 1u);
+  CreateRoomWith(8, "alice");
+  Leave(clients_[8]);
+  EXPECT_EQ(DoBuild(service_, clients_[8], 2400.0f, 2800.0f).result(), protocol::GAME_NOT_IN_ROOM);
+}
+
+TEST_F(BuildServiceTest, ALateJoinerReceivesTheCurrentStructuresWithTheirState) {
+  const std::string code = CreateRoomWith(1, "alice");
+  Equip(clients_[1], 40, 20);
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  for (int i = 0; i < 100; ++i) service_.Tick();  // 첫 집 완공
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2700.0f, 2700.0f).result(), protocol::GAME_OK);
+  service_.Tick();  // 둘째 집은 건설 중
+
+  auto bob = NewClient(2);
+  const auto joined = Join(bob, code, "bob");
+  ASSERT_EQ(joined.result(), protocol::GAME_OK);
+  ASSERT_EQ(joined.state().structures_size(), 2);
+  EXPECT_EQ(joined.state().structures(0).state(), protocol::STRUCTURE_COMPLETE);
+  EXPECT_EQ(joined.state().structures(1).state(), protocol::STRUCTURE_BUILDING);
+}
+
+TEST_F(BuildServiceTest, UpdatesStayInsideTheirOwnRoom) {
+  CreateRoomWith(1, "alice");
+  CreateRoomWith(2, "bob");  // 다른 방
+  Equip(clients_[1]);
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  service_.Tick();
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kStructureUpdate), 1u);
+  EXPECT_EQ(clients_[2]->CountOf(MessageId::kStructureUpdate), 0u);
+}
+
+TEST_F(BuildServiceTest, ACatchUpTickStillDeliversTheCompletion) {
+  CreateRoomWith(1, "alice");
+  auto alice = clients_[1];
+  Equip(alice);
+  ASSERT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  service_.Tick(3);
+  ASSERT_EQ(alice->CountOf(MessageId::kStructureUpdate), 1u);
+  service_.Tick(97);  // 정확히 100틱
+  ASSERT_EQ(alice->CountOf(MessageId::kStructureUpdate), 2u);
+  EXPECT_EQ(alice->Last<protocol::StructureUpdate>(MessageId::kStructureUpdate).structures(0).state(), protocol::STRUCTURE_COMPLETE);
+}
+
+TEST_F(BuildServiceTest, ALeaverDuringUpdateDeliveryDoesNotBreakTheTick) {
+  TwoPlayers();
+  Equip(clients_[1]);
+  clients_[1]->on_deliver = [this](MessageId id) {
+    if (id == MessageId::kStructureUpdate) service_.OnDisconnect(2);
+  };
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  service_.Tick();
+  EXPECT_EQ(service_.RoomCodeOf(2), "");
+  service_.Tick();
+  EXPECT_EQ(service_.stats().current_players.load(), 1u);
+}
+
+TEST_F(BuildServiceTest, TheServerStopsAPlayerAtABuiltWallEvenWhenTheClientKeepsPushing) {
+  CreateRoomWith(1, "alice");
+  auto alice = clients_[1];
+  Equip(alice);
+  ASSERT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);  // y 2650~2950
+
+  protocol::MoveInput input;
+  input.set_sequence(1);
+  input.set_dir_x(0.0f);
+  input.set_dir_y(50.0f);  // 부풀린 방향
+  service_.HandleMoveInput(alice, input);
+  float max_y = 0.0f;
+  for (int i = 0; i < 80; ++i) {
+    service_.Tick();
+    const auto snapshot = alice->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
+    max_y = std::max(max_y, snapshot.players(0).y());
+  }
+  EXPECT_LE(max_y, 2610.01f);
+  EXPECT_GE(max_y, 2600.0f) << "벽 앞까지는 간다";
+}
+
+TEST_F(BuildServiceTest, TwoBuildersOnTheSameSpotInTheSameTickExactlyOneSucceeds) {
+  TwoPlayers();
+  Equip(clients_[1]);
+  Equip(clients_[2]);
+  const auto first = DoBuild(service_, clients_[1], 2500.0f, 2800.0f);
+  const auto second = DoBuild(service_, clients_[2], 2500.0f, 2800.0f);
+  EXPECT_EQ(first.result(), protocol::GAME_OK);
+  EXPECT_EQ(second.result(), protocol::GAME_BUILD_BLOCKED);
+  EXPECT_EQ(second.wood(), 20u) << "진 사람은 비용을 내지 않는다";
+}
+
 TEST(GameServiceNoNodes, ARoomWithoutNodesWorks) {
   boost::asio::io_context io;
   PlayConfig config;

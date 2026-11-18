@@ -354,7 +354,7 @@ TEST_P(BadGamePayloadTest, UnparsableRequestClosesTheConnection) {
 INSTANTIATE_TEST_SUITE_P(Ids, BadGamePayloadTest,
                          ::testing::Values(MessageId::kCreateRoomRequest, MessageId::kJoinRoomRequest,
                                            MessageId::kLeaveRoomRequest, MessageId::kMoveInput,
-                                           MessageId::kGatherRequest));
+                                           MessageId::kGatherRequest, MessageId::kBuildRequest));
 
 // 서버가 보내는 쪽 메시지를 클라이언트가 보내면 알 수 없는 ID와 똑같이 연결을 닫는다.
 class GameServerOnlyIdTest : public ::testing::TestWithParam<MessageId> {};
@@ -372,7 +372,122 @@ INSTANTIATE_TEST_SUITE_P(Ids, GameServerOnlyIdTest,
                          ::testing::Values(MessageId::kCreateRoomResponse, MessageId::kJoinRoomResponse,
                                            MessageId::kLeaveRoomResponse, MessageId::kRoomEvent,
                                            MessageId::kWorldSnapshot, MessageId::kGatherResponse,
-                                           MessageId::kResourceUpdate));
+                                           MessageId::kResourceUpdate, MessageId::kBuildResponse,
+                                           MessageId::kStructureUpdate));
+
+// ============================================================ 집 짓기와 이동 충돌 (docs/content-roadmap.md)
+
+// 자원을 빨리 모을 수 있고(쿨다운 없음, 체력 넉넉) 건설이 빨리 끝나는 서버.
+server::ServerConfig BuildServerConfig(std::uint32_t build_ticks = 10) {
+  server::ServerConfig config = DefaultServerConfig();
+  config.play.gather_range_cm = 100000.0f;
+  config.play.gather_cooldown_ticks = 0;
+  config.play.tree_hp = 1000;
+  config.play.rock_hp = 1000;
+  config.play.build_ticks = build_ticks;
+  return config;
+}
+
+// 목재 20, 석재 10을 모은다(나무는 1~30번, 돌은 31~50번).
+void Equip(BlockingClient& client, int wood = 20, int stone = 10) {
+  for (int i = 0; i < wood; ++i) ASSERT_EQ(Gather(client, 1).result(), protocol::GAME_OK);
+  for (int i = 0; i < stone; ++i) ASSERT_EQ(Gather(client, 31).result(), protocol::GAME_OK);
+}
+
+TEST(GameIntegration, BuildingOverTcpTellsTheRoomAndLateJoinersAndCompletes) {
+  TestServer server(BuildServerConfig());
+  std::string code;
+  auto alice = CreateRoomPlayer(server, "alice", &code);
+  auto bob = JoinRoomPlayer(server, code, "bob");
+  Equip(*alice.client);
+
+  const auto built = Build(*alice.client, 2400.0f, 2800.0f);
+  ASSERT_EQ(built.result(), protocol::GAME_OK);
+  EXPECT_EQ(built.structure_id(), 1u);
+  EXPECT_EQ(built.wood(), 0u);
+  EXPECT_EQ(built.stone(), 0u);
+
+  protocol::StructureUpdate update;
+  const auto is_state = [](protocol::StructureState state) {
+    return [state](const protocol::StructureUpdate& u) {
+      return u.structures_size() == 1 && u.structures(0).structure_id() == 1 && u.structures(0).state() == state;
+    };
+  };
+  EXPECT_TRUE(WaitStructureUpdate(*alice.client, update, is_state(protocol::STRUCTURE_BUILDING))) << "짓는 본인도 알림";
+  EXPECT_EQ(update.structures(0).x(), 2400.0f);
+  EXPECT_EQ(update.structures(0).y(), 2800.0f);
+  EXPECT_EQ(update.structures(0).width(), 300.0f);
+  EXPECT_TRUE(WaitStructureUpdate(*bob.client, update, is_state(protocol::STRUCTURE_BUILDING)));
+  EXPECT_TRUE(WaitStructureUpdate(*alice.client, update, is_state(protocol::STRUCTURE_COMPLETE))) << "실제 타이머로 완공";
+  EXPECT_TRUE(WaitStructureUpdate(*bob.client, update, is_state(protocol::STRUCTURE_COMPLETE)));
+
+  auto carol = Connect(server);
+  const auto joined = JoinRoom(*carol, code, "carol");
+  ASSERT_EQ(joined.result(), protocol::GAME_OK);
+  ASSERT_EQ(joined.state().structures_size(), 1);
+  EXPECT_EQ(joined.state().structures(0).state(), protocol::STRUCTURE_COMPLETE) << "늦은 입장자는 현재 상태를 받는다";
+  EXPECT_EQ(server.game_stats().builds_ok.load(), 1u);
+  EXPECT_EQ(server.game_stats().structures_completed.load(), 1u);
+}
+
+TEST(GameIntegration, BuildRejectionsKeepTheConnectionAndTheInventory) {
+  TestServer server(BuildServerConfig());
+  auto alice = CreateRoomPlayer(server, "alice", nullptr);
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_ENOUGH_RESOURCES);
+  Equip(*alice.client);
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2800.0f, 9).result(), protocol::GAME_BUILD_INVALID_TYPE);
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2400.0f).result(), protocol::GAME_BUILD_BLOCKED) << "내 몸 위";
+  EXPECT_EQ(Build(*alice.client, 4000.0f, 4000.0f).result(), protocol::GAME_BUILD_TOO_FAR);
+  const auto ok = Build(*alice.client, 2400.0f, 2800.0f);
+  EXPECT_EQ(ok.result(), protocol::GAME_OK) << "거부된 것들은 아무것도 바꾸지 않았다";
+  EXPECT_EQ(ok.wood(), 0u);
+  EXPECT_TRUE(PingWorksInGame(*alice.client));
+  EXPECT_EQ(server.game_stats().builds_rejected.load(), 4u);
+}
+
+TEST(GameIntegration, BuildingOutsideARoomIsRejectedWithoutClosingTheConnection) {
+  TestServer server;
+  auto client = Connect(server);
+  EXPECT_EQ(Build(*client, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_TRUE(ServerStillWorks(server));
+}
+
+// 서버 판정 이동이 건물에 막힌다: 스냅샷의 y가 벽(2650) - 몸 반지름(40) = 2610을 넘지 않는다.
+TEST(GameIntegration, APlayerWalkingIntoABuiltHouseIsStoppedByTheServer) {
+  TestServer server(BuildServerConfig());
+  auto alice = CreateRoomPlayer(server, "alice", nullptr);
+  Equip(*alice.client);
+  ASSERT_EQ(Build(*alice.client, 2400.0f, 2800.0f).result(), protocol::GAME_OK);  // y 2650~2950
+
+  ASSERT_TRUE(SendMove(*alice.client, 1, 0.0f, 1.0f));
+  protocol::WorldSnapshot snapshot;
+  float max_y = 0.0f;
+  int near_wall = 0;
+  const bool done = WaitSnapshot(*alice.client, snapshot, [&](const protocol::WorldSnapshot& s) {
+    const auto* me = FindPlayer(s, 1);
+    if (me == nullptr) return false;
+    max_y = std::max(max_y, me->y());
+    near_wall = me->y() > 2600.0f ? near_wall + 1 : 0;
+    return near_wall >= 10;  // 벽에 닿은 채로 10개의 스냅샷(0.5초) 동안 머문다
+  }, Millis(6000));
+  EXPECT_TRUE(done) << "벽까지 걸어가서 멈춘다(max y " << max_y << ")";
+  EXPECT_LE(max_y, 2610.01f) << "서버가 벽을 뚫고 지나가는 것을 허용하지 않는다";
+}
+
+TEST(GameIntegration, TheTickKeepsRunningWhileAPlayerPushesAgainstAWallAndAnotherLeaves) {
+  TestServer server(BuildServerConfig());
+  std::string code;
+  auto alice = CreateRoomPlayer(server, "alice", &code);
+  {
+    auto bob = JoinRoomPlayer(server, code, "bob");
+    Equip(*bob.client);
+    ASSERT_EQ(Build(*bob.client, 2600.0f, 2900.0f).result(), protocol::GAME_OK);
+    ASSERT_TRUE(SendMove(*alice.client, 1, 0.5f, 1.0f));
+  }  // bob의 연결이 갑자기 닫힌다
+  protocol::WorldSnapshot snapshot;
+  EXPECT_TRUE(WaitSnapshot(*alice.client, snapshot, [](const protocol::WorldSnapshot& s) { return s.tick() > 40; }));
+  EXPECT_TRUE(ServerStillWorks(server));
+}
 
 // ============================================================ 자원 채집 (docs/stage4-gather.md)
 

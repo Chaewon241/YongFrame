@@ -52,8 +52,11 @@
 | 107 | `GatherRequest{node_id}` | C→S | 자원 채집(확장 1). 규칙은 [stage4-gather.md](stage4-gather.md) |
 | 108 | `GatherResponse{result, node_id, wood, stone}` | S→C | 결과 코드와 내 인벤토리 |
 | 112 | `ResourceUpdate{tick, nodes[{node_id, hp}]}` | S→C | 바뀐 노드가 있는 틱에만 |
+| 113 | `BuildRequest{structure_type, x, y}` | C→S | 집 짓기(콘텐츠 조각 1). 규칙은 [content-roadmap.md](content-roadmap.md) |
+| 114 | `BuildResponse{result, structure_id, wood, stone}` | S→C | 결과 코드와 내 인벤토리 |
+| 115 | `StructureUpdate{tick, structures[...]}` | S→C | 새로 생기거나 바뀐 구조물이 있는 틱에만 |
 
-결과 코드(`GameResult`): `GAME_OK`, `GAME_INVALID_NICKNAME`(채팅과 같은 닉네임 규칙), `GAME_INVALID_ROOM_CODE`(6자리 숫자가 아님), `GAME_ROOM_NOT_FOUND`, `GAME_ROOM_FULL`, `GAME_ALREADY_IN_ROOM`, `GAME_NOT_IN_ROOM`, `GAME_NICKNAME_TAKEN`(같은 방에 같은 닉네임), `GAME_SERVER_BUSY`(방 수 상한, 코드 발급 실패). 채집 확장에서 `GAME_NODE_NOT_FOUND`(9), `GAME_NODE_DEPLETED`(10), `GAME_TOO_FAR`(11), `GAME_GATHER_COOLDOWN`(12)이 더해졌다. `RoomState`에는 `nodes`(필드 5)가 더해졌다. 모두 하위 호환이다.
+결과 코드(`GameResult`): `GAME_OK`, `GAME_INVALID_NICKNAME`(채팅과 같은 닉네임 규칙), `GAME_INVALID_ROOM_CODE`(6자리 숫자가 아님), `GAME_ROOM_NOT_FOUND`, `GAME_ROOM_FULL`, `GAME_ALREADY_IN_ROOM`, `GAME_NOT_IN_ROOM`, `GAME_NICKNAME_TAKEN`(같은 방에 같은 닉네임), `GAME_SERVER_BUSY`(방 수 상한, 코드 발급 실패). 채집 확장에서 `GAME_NODE_NOT_FOUND`(9), `GAME_NODE_DEPLETED`(10), `GAME_TOO_FAR`(11), `GAME_GATHER_COOLDOWN`(12)이 더해졌다. `RoomState`에는 `nodes`(필드 5)가 더해졌다. 건설에서 `GAME_BUILD_INVALID_TYPE`(13), `GAME_BUILD_BLOCKED`(14), `GAME_NOT_ENOUGH_RESOURCES`(15), `GAME_BUILD_TOO_FAR`(16), `GAME_STRUCTURE_LIMIT`(17)과 `RoomState.structures`(필드 6)가 더해졌다. 모두 하위 호환이다. **서버 이동에 충돌이 생겼다**(구조물과 살아 있는 노드가 플레이어를 막는다). 이동 프로토콜은 그대로이고 위치 계산만 바뀌었다.
 
 규칙
 

@@ -36,6 +36,17 @@ struct PlayConfig {
   float spawn_clear_radius_cm = 500.0f;      // 맵 중앙(시작 위치) 이 반지름 안에는 두지 않는다
   std::uint64_t layout_seed = 20240607;      // 배치 생성 시드. 같은 설정이면 모든 방이 같은 배치
 
+  // ---- 집 짓기와 이동 충돌 (docs/content-roadmap.md). 임의 기본값 ----
+  float house_width_cm = 300.0f;             // 집 크기(축에 정렬된 직사각형)
+  float house_height_cm = 300.0f;
+  std::uint32_t house_cost_wood = 20;        // 건설을 요청한 사람의 인벤토리에서 즉시 차감
+  std::uint32_t house_cost_stone = 10;
+  float build_grid_cm = 100.0f;              // 요청 좌표를 이 격자의 중심에 맞춘다
+  float build_range_cm = 500.0f;             // 서버가 아는 내 위치에서 격자에 맞춘 중심까지(경계 포함)
+  std::uint32_t build_ticks = 100;           // 건설 중 상태가 이어지는 틱 수(5초)
+  std::uint32_t max_structures = 20;         // 방당 구조물 상한
+  float node_collision_radius_cm = 60.0f;    // 나무/돌이 이동을 막는 원의 반지름(고갈되면 막지 않는다)
+
   float TickSeconds() const { return 1.0f / static_cast<float>(tick_rate_hz == 0 ? 1 : tick_rate_hz); }
 };
 

@@ -12,6 +12,7 @@
 
 #include "play/play_config.h"
 #include "play/resources.h"
+#include "play/structures.h"
 #include "play/world.h"
 
 namespace game::play {
@@ -45,9 +46,31 @@ struct GatherOutcome {
   std::uint32_t stone = 0;
 };
 
+// 건설 시도의 결과. 프로토콜 코드(GameResult)로의 변환은 GameService가 한다.
+enum class BuildStatus {
+  kOk,
+  kNotInRoom,           // 이 방에 없는 연결
+  kInvalidType,         // 모르는 건물 종류
+  kLimit,               // 방의 구조물 수 상한
+  kTooFar,              // 서버가 아는 내 위치에서 건설 허용 거리 밖
+  kBlocked,             // 맵 밖, 구조물/노드/플레이어와 겹침, 잘못된 좌표
+  kNotEnoughResources,  // 비용 부족
+};
+
+struct BuildOutcome {
+  BuildStatus status = BuildStatus::kNotInRoom;
+  std::uint32_t structure_id = 0;  // 성공했을 때만
+  std::uint32_t wood = 0;          // 시도 뒤 내 인벤토리 합계(성공/실패 모두)
+  std::uint32_t stone = 0;
+};
+
 class Room {
  public:
   Room(std::string code, const PlayConfig& config);
+
+  // 월드가 이 방의 노드와 구조물을 가리키는 포인터를 들고 있으므로 복사하거나 옮기지 않는다.
+  Room(const Room&) = delete;
+  Room& operator=(const Room&) = delete;
 
   const std::string& code() const { return code_; }
   bool Full() const { return members_.size() >= config_.max_players; }
@@ -82,6 +105,17 @@ class Room {
   // 거부되면 아무 상태도 바뀌지 않는다. 시간은 이 방 월드의 틱 번호다.
   GatherOutcome Gather(std::uint64_t client_id, std::uint32_t node_id);
 
+  // 연결의 인벤토리에 자원을 더한다(보상, 시험용). 이 방에 없는 연결이면 false.
+  bool GrantResources(std::uint64_t client_id, std::uint32_t wood, std::uint32_t stone);
+
+  StructureSet& structures() { return structures_; }
+  const StructureSet& structures() const { return structures_; }
+
+  // 연결이 건물을 짓는다. (x, y)는 짓고 싶은 중심이며 build_grid_cm 격자의 중심으로 맞춘다.
+  // 판정 순서: 방에 없음 -> 모르는 종류 -> 구조물 상한 -> 너무 멂 -> 겹침/맵 밖 -> 자원 부족.
+  // 거부되면 아무 상태도 바뀌지 않는다. 성공하면 비용을 차감하고 건설 중 구조물을 만든다. 시간은 월드 틱이다.
+  BuildOutcome Build(std::uint64_t client_id, std::uint32_t structure_type, float x, float y);
+
  private:
   std::uint32_t LowestFreeSlot() const;
 
@@ -92,6 +126,7 @@ class Room {
   std::uint32_t host_player_id_ = 0;  // 0이면 방장 없음(빈 방)
   World world_;
   ResourceField resources_;
+  StructureSet structures_;
 };
 
 }  // namespace game::play

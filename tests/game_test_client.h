@@ -21,8 +21,8 @@ namespace game::testing_support {
 // 응답을 기다리는 동안 건너뛰는 종류.
 // 채팅에도 입장한 연결이면 채팅 전파(ChatBroadcast)와 입장 알림(PresenceNotice)도 끼어든다.
 inline const std::vector<MessageId> kGameSkip = {MessageId::kWorldSnapshot, MessageId::kRoomEvent,
-                                                  MessageId::kResourceUpdate, MessageId::kPresenceNotice,
-                                                  MessageId::kChatBroadcast};
+                                                  MessageId::kResourceUpdate, MessageId::kStructureUpdate,
+                                                  MessageId::kPresenceNotice, MessageId::kChatBroadcast};
 
 inline protocol::CreateRoomResponse CreateRoom(BlockingClient& c, const std::string& nickname) {
   protocol::CreateRoomRequest request;
@@ -149,6 +149,42 @@ inline bool WaitResourceUpdate(BlockingClient& c, protocol::ResourceUpdate& out,
     if (status != Status::kFrame) return false;
     if (frame.message_id != protocol::ToUint16(MessageId::kResourceUpdate)) continue;
     protocol::ResourceUpdate update;
+    if (!update.ParseFromArray(frame.payload.data(), static_cast<int>(frame.payload.size()))) return false;
+    if (predicate(update)) {
+      out = update;
+      return true;
+    }
+  }
+  return false;
+}
+
+// 건물을 짓는다. 응답(결과 코드와 내 인벤토리)을 돌려준다.
+inline protocol::BuildResponse Build(BlockingClient& c, float x, float y, std::uint32_t type = 0) {
+  protocol::BuildRequest request;
+  request.set_structure_type(static_cast<protocol::StructureType>(type));
+  request.set_x(x);
+  request.set_y(y);
+  protocol::BuildResponse response;
+  response.set_result(static_cast<protocol::GameResult>(-1));
+  if (!SendProto(c, MessageId::kBuildRequest, request) ||
+      !Receive(c, MessageId::kBuildResponse, response, kGameSkip)) {
+    ADD_FAILURE() << "건설 요청/응답 실패: " << c.last_error();
+  }
+  return response;
+}
+
+// StructureUpdate 중 조건을 만족하는 것이 올 때까지 기다린다. 다른 메시지는 버린다.
+inline bool WaitStructureUpdate(BlockingClient& c, protocol::StructureUpdate& out,
+                                const std::function<bool(const protocol::StructureUpdate&)>& predicate,
+                                Millis timeout = Millis(3000)) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    protocol::Frame frame;
+    const Status status = c.ReceiveFrame(frame, Millis(500));
+    if (status == Status::kTimeout) continue;
+    if (status != Status::kFrame) return false;
+    if (frame.message_id != protocol::ToUint16(MessageId::kStructureUpdate)) continue;
+    protocol::StructureUpdate update;
     if (!update.ParseFromArray(frame.payload.data(), static_cast<int>(frame.payload.size()))) return false;
     if (predicate(update)) {
       out = update;

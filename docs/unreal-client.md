@@ -96,8 +96,10 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 | 111 | `WorldSnapshot{tick, players[{player_id, x, y, last_input_seq}]}` | S→C |
 | 107 / 108 | `GatherRequest{node_id}` / `GatherResponse{result, node_id, wood, stone}` | C→S / S→C |
 | 112 | `ResourceUpdate{tick, nodes[{node_id, hp}]}` (바뀐 노드가 있는 틱에만) | S→C |
+| 113 / 114 | `BuildRequest{structure_type, x, y}` / `BuildResponse{result, structure_id, wood, stone}` | C→S / S→C |
+| 115 | `StructureUpdate{tick, structures[{structure_id, type, x, y, width, height, state, ready_tick}]}` (새로 생기거나 바뀐 구조물이 있는 틱에만) | S→C |
 
-자원 채집(107, 108, 112, `RoomState.nodes`, 결과 코드 9~12)의 규칙은 [stage4-gather.md](stage4-gather.md)가 기준이고, Unreal 쪽 구현은 아래 "자원 채집 (Unreal)" 절이다.
+자원 채집(107, 108, 112, `RoomState.nodes`, 결과 코드 9~12)의 규칙은 [stage4-gather.md](stage4-gather.md)가 기준이고, Unreal 쪽 구현은 아래 "자원 채집 (Unreal)" 절이다. 집 짓기(113~115, `RoomState.structures`, 결과 코드 13~17)와 이동 충돌은 [content-roadmap.md](content-roadmap.md)가 기준이고 Unreal 쪽은 "집 짓기 (Unreal)" 절이다.
 
 - 방 코드는 숫자 6자리 **문자열**이다(`"000042"`처럼 앞자리가 0일 수 있다). 정수로 바꾸지 않는다.
 - 위치 단위는 센티미터(Unreal과 같음), 맵은 5,000 x 5,000 cm이고 원점은 한쪽 모서리다. 이동 속도 300 cm/s, 최대 4명, 틱 20 Hz는 **임의로 정한 기본값**이다(`PlayConfig`).
@@ -120,6 +122,11 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 | `GatherResponse{OK, node_id=7, wood=1, stone=0}` | `00 00 00 06` `00 6C` `10 07 18 01` (`result`가 OK(0)이면 생략, `stone`이 0이면 생략) |
 | `GatherResponse{TOO_FAR(11), node_id=7, wood=3, stone=2}` | `00 00 00 0A` `00 6C` `08 0B 10 07 18 03 20 02` |
 | `ResourceUpdate{tick=3, nodes=[{node_id=1, hp=0}]}` | `00 00 00 08` `00 70` `08 03 12 02 08 01` (`hp`가 0이면 필드를 생략) |
+
+| `BuildRequest{HOUSE, x=2600, y=2400}` | `00 00 00 0C` `00 71` `15 00 80 22 45 1D 00 00 16 45` (`structure_type`이 HOUSE(0)이면 생략) |
+| `BuildResponse{OK, structure_id=1}` | `00 00 00 04` `00 72` `10 01` |
+| `BuildResponse{NOT_ENOUGH_RESOURCES(15), wood=19, stone=9}` | `00 00 00 08` `00 72` `08 0F 18 13 20 09` |
+| `StructureUpdate{tick=3, [{id=1, HOUSE, x=2600, y=2400, 300x300, BUILDING, ready_tick=100}]}` | `00 00 00 1E` `00 73` `08 03 12 18 08 01 1D 00 80 22 45 25 00 00 16 45 2D 00 00 96 43 35 00 00 96 43 40 64` (`type`과 `state`가 0이면 생략) |
 
 `float`은 Protobuf가 4바이트 little-endian으로 인코딩한다(`1.0` = `00 00 80 3F`). 프레임 헤더(길이, ID)는 big-endian이다.
 
@@ -272,6 +279,25 @@ build\windows-local\Release\game_server.exe --port 18320 --log-level info --stat
 **시험(`GameClientSpike`):** `gather`(40건, 진짜 서버에 `FGameClient` 셋: 방 만들기 응답의 노드 50개와 종류, 시작 위치에서 `TooFar`와 `NodeNotFound`, 가까운 나무까지 **실제로 걸어가** 치기, 목재 증가, 방 사람 모두의 체력 변화, 쿨다운 거부, 쿨다운을 지킨 연속 채집과 고갈, `NodeDepleted`, 돌의 석재, 늦은 입장자가 고갈 상태를 받음, 나가면 인벤토리와 노드가 비워짐), `subsystem-gather`(25건: 같은 흐름을 서브시스템으로, 가장 가까운 노드 찾기의 경계와 "번호가 낮은 쪽이 아니라 가까운 쪽" 선택 포함). 서버 재생(30초)은 서버 쪽 시험이 확인하므로 여기서는 기다리지 않는다. 서버는 기본 설정이면 되고(`game_server.exe --port N`) 특별한 옵션이 없다.
 
 **아직 시험하지 못한 것:** 노드 액터, 게임 모드의 노드 동기화, 컨트롤러의 `E` 입력과 목표 선택, HUD 표시는 컴파일만 확인했다(월드가 필요하다). 에디터 쪽 에셋(`BP_ResourceTree`, `BP_ResourceRock`, `WBP_HUD`의 새 위젯)은 MCP 세션이 만들고, PIE에서 사람이 확인한다.
+
+## 집 짓기 (Unreal)
+
+서버 규칙, 완료 기준, 기본값은 [content-roadmap.md](content-roadmap.md)다. **서버 판정 이동에 충돌이 생겼다**: 건설 중이든 완공이든 구조물, 그리고 고갈되지 않은 나무/돌(반지름 60 cm 원)이 플레이어(반지름 40 cm)를 막는다. 노드 가까이에서는 중심에서 약 100 cm까지만 다가갈 수 있으므로(채집 허용 거리 200 cm 안), 노드를 향해 걸어가는 시험은 100 cm보다 먼 곳(125 cm)에서 멈춘다.
+
+| 클래스 | 역할 |
+| --- | --- |
+| `FGameClient` | `BuildHouse(X, Y)`, 건설 응답(`OnBuildResult`: 결과, 구조물 번호, 내 인벤토리), 구조물 변화(`OnStructuresChanged`), 방 상태의 `Structures`(번호가 같으면 갱신, 없으면 추가). 나가거나 끊기면 비워지고, 방 밖에서 도착한 응답/알림은 버린다 |
+| `YongBuild`(`YongBuildRules.*`) | 서버 규칙을 그대로 따라 한 순수 함수: `SnapToGrid`, `Evaluate`(너무 멂 → 맵 밖/겹침 → 자원 부족, 서버와 같은 순서), `Describe`. 값(집 300x300 cm, 격자 100, 거리 500, 목재 20/석재 10, 건설 100틱)은 서버 `PlayConfig`의 복사이며 어긋나면 서버가 기준이다. 보간된(0.1초 늦은) 위치로 계산하므로 경계에서는 서버와 다를 수 있다 |
+| `UYongNetSubsystem` | `BuildHouse`, `GetStructures`, `EvaluatePlacement(마우스 땅 좌표)`(격자로 맞춘 자리와 판정을 돌려줌), 이벤트 `OnBuildResult`, `OnStructuresChanged` |
+| `AYongStructureActor` | 구조물 하나의 표현. 서버 틱 기준 진행률만큼 높이가 자라다가 완료되면 완성 모양. 메시는 발자국에 맞춰 크기가 조정되고 바닥이 지면에 닿는다. 기본 모양은 엔진 큐브이고 `CompleteMesh`/`BuildingMesh`로 바꾼다. 충돌 없음 |
+| `AYongBuildGhost` | 건설 미리보기. 지을 수 있으면 `ValidMaterial`(초록), 없으면 `InvalidMaterial`(빨강). 비워 두면 엔진 기본 머티리얼에 색 값을 넣어 본다 |
+| `AYongRoomGameMode` | `HouseClass`, `BuildGhostClass`로 구조물 액터를 만들고 서버 틱과 완료를 반영한다. `ShowBuildGhost`로 미리보기를 켜고 끈다 |
+| `AYongPlayerController` | `B`로 건설 모드를 켜고 끈다. 켜면 마우스가 가리키는 땅(Z = 0 평면)의 격자 중심에 미리보기가 따라가고, **왼쪽 클릭**으로 짓고(클라이언트가 지을 수 있다고 볼 때만 요청), **오른쪽 클릭이나 B**로 취소한다. 건설이 성공하면 자동으로 꺼진다 |
+| `UYongHudWidget` | 선택 위젯 `BuildCostText`(평소 비용, 건설 모드에서는 지금 자리의 판정 문구), `BuildHintText`(건설 모드 안내). 건설 결과 문구를 `StatusText`에 2초 보인다 |
+
+**시험(`GameClientSpike`):** `buildrules`(25건, 서버 불필요: 격자, 거리 경계 500 cm, 맵 경계, 구조물/노드/플레이어 겹침, 닿기만 하는 경계, 비용, 판정 순서), `build`(35건, 진짜 서버에 서브시스템 셋: 자원 없을 때 거부, **가까운 나무와 돌까지 실제로 걸어가 목재 20, 석재 10을 모으고**, 클라이언트가 지을 수 있다고 본 자리에 서버도 짓게 하는 판정 일치, 거부 코드(자원 부족, 겹침, 너무 멂), 정확한 비용 차감, 건설 중 → 약 5초 뒤 완공 알림, 집 한가운데로 걸어도 **몸이 발자국 안으로 들어가지 못함**, 늦은 입장자가 완공된 집을 받음, 나가면 비워지고 지은 사람이 나가도 집은 남음). 이 시험은 약 1분 걸린다. `ui`는 새 결과 문구 5개가 서로 다른지도 확인한다.
+
+**아직 시험하지 못한 것:** 구조물 액터와 미리보기의 모양, 건설 모드의 마우스 입력(땅 좌표 계산, 클릭), HUD 표시는 컴파일만 확인했다(월드와 창이 필요). 에디터 에셋과 PIE 확인은 MCP 작업 뒤에 사람이 한다.
 
 ## Unreal MCP (Epic 제공, 5.8)
 

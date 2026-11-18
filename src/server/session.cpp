@@ -192,6 +192,7 @@ void Session::HandleFrame(const protocol::Frame& frame) {
     case protocol::MessageId::kLeaveRoomRequest:
     case protocol::MessageId::kMoveInput:
     case protocol::MessageId::kGatherRequest:
+    case protocol::MessageId::kBuildRequest:
       HandleGameFrame(frame);
       return;
     default:
@@ -290,6 +291,14 @@ void Session::HandleGameFrame(const protocol::Frame& frame) {
       if (ParsePayload(frame, request, "GatherRequest")) {
         Log(LogLevel::kDebug, "[채집요청] id=", id_, " node=", request.node_id());
         game_.HandleGather(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kBuildRequest: {
+      game::protocol::BuildRequest request;
+      if (ParsePayload(frame, request, "BuildRequest")) {
+        Log(LogLevel::kDebug, "[건설요청] id=", id_);
+        game_.HandleBuild(self, request);
       }
       return;
     }

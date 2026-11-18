@@ -42,6 +42,19 @@ void AtomicMax(std::atomic<std::uint64_t>& target, std::uint64_t value) {
   }
 }
 
+protocol::Structure MakeStructure(const Structure& structure) {
+  protocol::Structure out;
+  out.set_structure_id(structure.id);
+  out.set_type(protocol::STRUCTURE_HOUSE);
+  out.set_x(structure.x);
+  out.set_y(structure.y);
+  out.set_width(structure.width);
+  out.set_height(structure.height);
+  out.set_state(structure.state == StructureState::kComplete ? protocol::STRUCTURE_COMPLETE : protocol::STRUCTURE_BUILDING);
+  out.set_ready_tick(structure.ready_tick);
+  return out;
+}
+
 protocol::PlayerInfo MakePlayerInfo(const Member& member) {
   protocol::PlayerInfo info;
   info.set_player_id(member.player_id);
@@ -60,7 +73,9 @@ std::string GameStats::Summary() const {
       << " 틱=" << ticks.load() << " 건너뜀=" << ticks_skipped.load()
       << " 스냅샷=" << snapshots_sent.load() << " 최대틱처리=" << max_tick_micros.load() << "us"
       << " 채집=" << gathers_ok.load() << " 채집거부=" << gathers_rejected.load()
-      << " 고갈=" << nodes_depleted.load() << " 재생=" << nodes_respawned.load();
+      << " 고갈=" << nodes_depleted.load() << " 재생=" << nodes_respawned.load()
+      << " 건설=" << builds_ok.load() << " 건설거부=" << builds_rejected.load()
+      << " 완공=" << structures_completed.load();
   return out.str();
 }
 
@@ -106,6 +121,9 @@ protocol::RoomState GameService::MakeRoomState(const Room& room, std::uint32_t y
     out->set_y(node.y);
     out->set_hp(node.hp);
     out->set_max_hp(node.max_hp);
+  }
+  for (const Structure& structure : room.structures().structures()) {
+    *state.add_structures() = MakeStructure(structure);
   }
   return state;
 }
@@ -359,6 +377,42 @@ void GameService::HandleGather(const std::shared_ptr<GameClient>& client, const 
   client->Deliver(protocol::MessageId::kGatherResponse, response);
 }
 
+// ---------------------------------------------------------------- 건설
+
+void GameService::HandleBuild(const std::shared_ptr<GameClient>& client, const protocol::BuildRequest& request) {
+  protocol::BuildResponse response;
+
+  BuildOutcome outcome;  // 기본은 방에 없음
+  const auto connection = connections_.find(client->client_id());
+  if (connection != connections_.end()) {
+    const auto it = rooms_.find(connection->second.room_code);
+    if (it != rooms_.end()) {
+      outcome = it->second->Build(client->client_id(), static_cast<std::uint32_t>(request.structure_type()), request.x(),
+                                  request.y());
+    }
+  }
+
+  switch (outcome.status) {
+    case BuildStatus::kOk:
+      response.set_result(protocol::GAME_OK);
+      response.set_structure_id(outcome.structure_id);
+      ++stats_.builds_ok;
+      break;
+    case BuildStatus::kNotInRoom: response.set_result(protocol::GAME_NOT_IN_ROOM); break;
+    case BuildStatus::kInvalidType: response.set_result(protocol::GAME_BUILD_INVALID_TYPE); break;
+    case BuildStatus::kLimit: response.set_result(protocol::GAME_STRUCTURE_LIMIT); break;
+    case BuildStatus::kTooFar: response.set_result(protocol::GAME_BUILD_TOO_FAR); break;
+    case BuildStatus::kBlocked: response.set_result(protocol::GAME_BUILD_BLOCKED); break;
+    case BuildStatus::kNotEnoughResources: response.set_result(protocol::GAME_NOT_ENOUGH_RESOURCES); break;
+  }
+  if (outcome.status != BuildStatus::kOk) {
+    ++stats_.builds_rejected;
+  }
+  response.set_wood(outcome.wood);
+  response.set_stone(outcome.stone);
+  client->Deliver(protocol::MessageId::kBuildResponse, response);
+}
+
 // ---------------------------------------------------------------- 틱
 
 void GameService::Tick(std::uint32_t steps) {
@@ -373,6 +427,7 @@ void GameService::Tick(std::uint32_t steps) {
     std::vector<std::shared_ptr<GameClient>> targets;
     protocol::WorldSnapshot snapshot;
     protocol::ResourceUpdate resource_update;  // 바뀐 노드가 없으면 nodes가 비어 있고 보내지 않는다
+    protocol::StructureUpdate structure_update;  // 바뀐 구조물이 없으면 structures가 비어 있고 보내지 않는다
   };
   std::vector<Outgoing> outgoing;
   outgoing.reserve(rooms_.size());
@@ -383,6 +438,7 @@ void GameService::Tick(std::uint32_t steps) {
     }
     // 재생할 노드를 되살린다(따라잡기 틱이 합쳐져도 한 번에 현재 틱 기준으로 처리한다).
     stats_.nodes_respawned += room.resources().Advance(room.world().tick());
+    stats_.structures_completed += room.structures().Advance(room.world().tick());
     Outgoing out;
     out.targets = RecipientsOf(room, 0);
     if (out.targets.empty()) {
@@ -394,6 +450,10 @@ void GameService::Tick(std::uint32_t steps) {
       node->set_hp(change.hp);
     }
     out.resource_update.set_tick(room.world().tick());
+    for (const Structure& changed : room.structures().TakeChanges()) {
+      *out.structure_update.add_structures() = MakeStructure(changed);
+    }
+    out.structure_update.set_tick(room.world().tick());
     out.snapshot.set_tick(room.world().tick());
     for (const auto& body : room.world().players()) {
       protocol::PlayerState* state = out.snapshot.add_players();
@@ -415,6 +475,10 @@ void GameService::Tick(std::uint32_t steps) {
       if (out.resource_update.nodes_size() > 0) {
         target->Deliver(protocol::MessageId::kResourceUpdate, out.resource_update);
         ++stats_.resource_updates_sent;
+      }
+      if (out.structure_update.structures_size() > 0) {
+        target->Deliver(protocol::MessageId::kStructureUpdate, out.structure_update);
+        ++stats_.structure_updates_sent;
       }
     }
   }

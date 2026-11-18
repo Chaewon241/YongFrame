@@ -7,7 +7,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 - 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준·확장 측정을 마쳤고(Active 4,000연결까지 합격, 서버 스레드 1개의 처리량 상한 관측 약 4.5만/s) 비교 실험 1(로그 레벨)도 완료(`debug`는 응답당 CPU 5~6배, 부하 측정은 `info`), 실험 2(Nagle)도 완료(끄는 이득 없음, 켬 유지)이고 다음은 실험 3(스레드 수)(docs/stage3.md, results/stage3/). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
 - 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
 - **4단계(게임) 서버 최소 구현 완료(Windows)**: 방 만들기, 6자리 숫자 코드로 입장(최대 4명), 방장 변경, 빈 방 삭제, 서버 판정 이동(속도 300 cm/s, 맵 5,000 x 5,000 cm), 20Hz 방 전체 스냅샷. `ctest` 218개 통과(MySQL 11개 건너뜀. 채집 확장 뒤에는 251개). 값은 사용자가 정하지 않아 **임의 기본값**이며 `PlayConfig`에서 바꾼다. **부하 측정 완료: 방 500개(플레이어 2,000명)까지 합격, 600개부터 불합격**(results/stage4/game-load.md, Windows 루프백 한 대). Unreal 쪽 연동은 다음 작업이다. 설계와 검증은 [docs/stage4.md](docs/stage4.md), Unreal용 프로토콜과 기준 바이트는 [docs/unreal-client.md](docs/unreal-client.md).
-- **Unreal 연동 스파이크 성공**: `D:\UnrealProjects\YongClient`(이 저장소와 별개)에서 서버에 접속해 Ping 5건 왕복을 확인했다(docs/unreal-client.md). 5.4.4에서 먼저 확인하고 **UE 5.8.4(`D:\UE_5.8`)로 올려 다시 통과**했다(5.4 시점 프로젝트는 `YongClient_UE54_backup`). 5.8은 MSVC 14.44가 선호 버전이라 5.4 때의 우회가 필요 없고, 타깃은 `BuildSettingsVersion.Latest`를 쓴다. 이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치다. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. Unreal 프로젝트에는 접속 계층(`FGameNetworkConnection`)과 게임 메시지 계층(`FGameClient`)이 구현되어 실제 서버로 시험을 통과했다(docs/unreal-client.md). 그 프로젝트는 이 저장소와 별개인 로컬 git 저장소다(원격 없음). **게임 클라이언트 최소판 완료**: 서브시스템, 스냅샷 보간, 탑뷰 카메라, WASD 이동, 메뉴(방 만들기/코드 입장)와 HUD(UMG, 로직은 C++)를 만들었고, 에디터에서 창 2개(Play Standalone)로 서버에 접속해 한 방에 여러 명이 보이는 것을 사용자가 확인했다(docs/unreal-client.md "메뉴와 HUD"). 에셋은 Git LFS. **4단계 확장 1(자원 채집) 서버와 Unreal C++ 구현 완료(Windows, 에디터 쪽 에셋과 PIE 확인은 남음)**: 서버가 나무 30개/돌 20개 노드의 배치, 체력, 재생(30초)과 거리(200 cm)·쿨다운(0.5초) 판정을 소유하고, `E`로 쳐서 목재/석재를 얻는다. 서버 `ctest` 251개 통과(MySQL 11개 건너뜀), 변형 검증 서버 20가지를 모두 잡았다. 설계와 검증은 [docs/stage4-gather.md](docs/stage4-gather.md). PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싸야 한다(점에서 쪼개짐).
+- **Unreal 연동 스파이크 성공**: `D:\UnrealProjects\YongClient`(이 저장소와 별개)에서 서버에 접속해 Ping 5건 왕복을 확인했다(docs/unreal-client.md). 5.4.4에서 먼저 확인하고 **UE 5.8.4(`D:\UE_5.8`)로 올려 다시 통과**했다(5.4 시점 프로젝트는 `YongClient_UE54_backup`). 5.8은 MSVC 14.44가 선호 버전이라 5.4 때의 우회가 필요 없고, 타깃은 `BuildSettingsVersion.Latest`를 쓴다. 이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치다. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. Unreal 프로젝트에는 접속 계층(`FGameNetworkConnection`)과 게임 메시지 계층(`FGameClient`)이 구현되어 실제 서버로 시험을 통과했다(docs/unreal-client.md). 그 프로젝트는 이 저장소와 별개인 로컬 git 저장소다(원격 없음). **게임 클라이언트 최소판 완료**: 서브시스템, 스냅샷 보간, 탑뷰 카메라, WASD 이동, 메뉴(방 만들기/코드 입장)와 HUD(UMG, 로직은 C++)를 만들었고, 에디터에서 창 2개(Play Standalone)로 서버에 접속해 한 방에 여러 명이 보이는 것을 사용자가 확인했다(docs/unreal-client.md "메뉴와 HUD"). 에셋은 Git LFS. **4단계 확장 1(자원 채집) 서버와 Unreal C++ 구현 완료(Windows, 에디터 쪽 에셋과 PIE 확인은 남음)**: 서버가 나무 30개/돌 20개 노드의 배치, 체력, 재생(30초)과 거리(200 cm)·쿨다운(0.5초) 판정을 소유하고, `E`로 쳐서 목재/석재를 얻는다. 서버 `ctest` 251개 통과(MySQL 11개 건너뜀), 변형 검증 서버 20가지를 모두 잡았다. 설계와 검증은 [docs/stage4-gather.md](docs/stage4-gather.md). **콘텐츠 조각 1(집 짓기와 이동 충돌) 서버와 Unreal C++ 구현 완료(Windows, 에디터 에셋과 PIE 확인, 부하 재측정은 남음)**: B로 건설 모드, 마우스 클릭으로 300x300 cm 집을 지음(목재 20, 석재 10, 5초 건설 중), 구조물과 살아 있는 나무/돌이 서버 판정 이동을 막음. `ctest` 310개 중 299개 통과(MySQL 11개 건너뜀), 서버 변형 검증 30가지 중 29가지를 잡고 1가지는 동등 변형, Unreal 변형 검증 10가지를 모두 잡았다. **충돌이 이동 계산에 들어갔으나 부하 재측정은 아직 하지 않아 "방 500개 합격"은 충돌 이전 결과다.** 설계와 검증은 [docs/content-roadmap.md](docs/content-roadmap.md). PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싸야 한다(점에서 쪼개짐).
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -25,6 +25,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/game-plan.md](docs/game-plan.md) | 4단계 게임 기획 초안(1~4인 협동 농장, Unreal 클라이언트), 서버 영향, 미정 사항 |
 | [docs/stage4.md](docs/stage4.md) | 4단계 게임 서버: 범위, 프로토콜(ID 100~111), 기본값, 완료 기준, 검증 결과, 겪은 문제, 제한 |
 | [docs/stage4-gather.md](docs/stage4-gather.md) | 4단계 확장 1(자원 채집) 설계: 범위, 프로토콜(ID 107/108/112), 기본값, 완료 기준, 서버·Unreal 설계, MCP 작업 목록 (구현 전) |
+| [docs/content-roadmap.md](docs/content-roadmap.md) | 채집 이후 콘텐츠 로드맵(집 짓기 → 하루 → 농사 → 경제 → 저장)과 첫 조각(집 짓기, 이동 충돌 포함) 설계. 구현 전 계획 |
 | [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(5.4.4와 5.8.4에서 Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법, 겪은 문제, 확인 방법 |
 | [README.md](README.md) | 진입점. 위 문서 링크와 바로 시작할 작업 |
 
@@ -103,7 +104,7 @@ build/windows-local/Debug/chat_room_test.exe            # 채팅 방 로직 23�
 build/windows-local/Debug/chat_integration_test.exe     # 채팅 통합 20개 (실제 TCP)
 ```
 
-`ctest --test-dir build/windows-local -C Debug`로 전체 262개가 한 번에 실행된다(MySQL 대상 11개는 비밀번호가 없으면 건너뜀) (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
+`ctest --test-dir build/windows-local -C Debug`로 전체 310개가 한 번에 실행된다(MySQL 대상 11개는 비밀번호가 없으면 건너뜀) (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
 
 ### 수동 확인 (서버 + ping_client)
 
@@ -153,7 +154,7 @@ build/windows-local/Release/game_client.exe --port 7777 --create --nick alice   
 build/windows-local/Release/game_client.exe --port 7777 --join <방코드> --nick bob        # 터미널 3
 ```
 
-명령: `/create <닉네임>`, `/join <방코드> <닉네임>`, `/leave`, `/move <dx> <dy>`(길이 1 이하 방향), `/stop`, `/snap <N>`(N틱마다 위치 출력, 0이면 끔), `/nodes`(자원 노드 목록과 내 위치에서의 거리), `/gather [번호]`(노드를 한 번 침, 번호를 생략하면 가장 가까운 살아 있는 노드. 서버 허용 거리 200 cm 안으로 `/move`로 먼저 가야 한다), `/ping`, `/wait <밀리초>`, `/quit`, `/help`. 위치는 서버가 계산해 20Hz 스냅샷으로 보내며 클라이언트는 방향만 보낸다. 서버 로그는 `info`로 두면 방 생성/입장/퇴장/삭제만 남는다. 단위·통합 테스트는 `play_world_test`, `play_resources_test`, `play_room_test`, `game_service_test`, `game_integration_test`다.
+명령: `/create <닉네임>`, `/join <방코드> <닉네임>`, `/leave`, `/move <dx> <dy>`(길이 1 이하 방향), `/stop`, `/snap <N>`(N틱마다 위치 출력, 0이면 끔), `/nodes`(자원 노드 목록과 내 위치에서의 거리), `/gather [번호]`(노드를 한 번 침, 번호를 생략하면 가장 가까운 살아 있는 노드. 서버 허용 거리 200 cm 안으로 `/move`로 먼저 가야 한다), `/ping`, `/wait <밀리초>`, `/quit`, `/help`. 위치는 서버가 계산해 20Hz 스냅샷으로 보내며 클라이언트는 방향만 보낸다. 서버 로그는 `info`로 두면 방 생성/입장/퇴장/삭제만 남는다. `/build <x> <y>`(그 자리에 집을 지음, 내 위치 500 cm 이내), `/structures`(건물 목록)도 있다. 단위·통합 테스트는 `play_world_test`, `play_resources_test`, `play_structures_test`, `play_collision_test`, `play_room_test`, `game_service_test`, `game_integration_test`다.
 
 ### 게임 부하 측정 (4단계, game_load_client)
 
@@ -210,6 +211,7 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/play/world.h/.cpp`: 한 방의 위치와 이동 계산(순수 계산, 서버 판정). 방향 길이는 `double` `hypot`으로 구해 1로 제한한다(`play_core` 라이브러리)
 - `src/play/room.h/.cpp`: 방 한 개의 인원, 방장, 닉네임, 시작 칸(slot). 소켓과 시간을 모른다
 - `src/play/resources.h/.cpp`: 한 방의 자원 노드(고정 시드 배치, 체력, 고갈, 틱 기준 재생, 바뀐 노드 모으기). 소켓과 시계를 모르는 순수 계산이고 시간은 틱 번호로만 안다. `Room::Gather`가 거리·쿨다운·인벤토리를 합쳐 판정하고, 판정 순서는 방에 없음 → 노드 없음 → 고갈 → 너무 멂 → 쿨다운이다. 규칙은 docs/stage4-gather.md
+- `src/play/structures.h/.cpp`, `src/play/geometry.h`: 한 방의 구조물(건설 진행, 틱 기준 완공, 바뀐 구조물 모으기)과 겹침 판정 함수(닿기만 하는 것은 겹침이 아니다, double 계산). `Room::Build`가 거리·겹침(구조물, 살아 있는 노드, **모든 플레이어**)·비용을 판정하며 순서는 방에 없음 → 종류 → 상한 → 너무 멂 → 겹침/맵 밖 → 자원 부족이다. `World`는 구조물과 노드를 읽기 전용 포인터로 받아(`AttachObstacles`, 그래서 `Room`은 복사/이동 금지) 이동을 축별로 나눠 막고 벽을 따라 미끄러지게 한다. 규칙은 docs/content-roadmap.md
 - `src/play/game_service.h/.cpp`: 여러 방 관리, 6자리 숫자 코드 발급(충돌 재발급, 생성기 교체 가능), 입장/퇴장/방장 변경/알림, 고정 간격 틱(밀리면 최대 3틱 따라잡고 나머지는 건너뜀). 전송 중 연결이 닫혀도 안전하도록 틱은 "계산 -> 수신자 확보 -> 전송" 순서다. 연결은 기존 `chat::ChatClient` 인터페이스를 그대로 쓴다
 - `src/client/game_client.cpp`: 대화형 게임 클라이언트(수동 실험용)
 - `src/tools/game_load_client.cpp`: 4단계 게임 부하 생성기(방 R개 x 4명, 열린 루프 입력, 스냅샷 도착 간격/입력 반영 지연/누락/정합성 검사, 생성기 포화 감지)

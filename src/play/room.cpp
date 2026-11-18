@@ -1,12 +1,15 @@
 #include "play/room.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace game::play {
 
 Room::Room(std::string code, const PlayConfig& config)
-    : code_(std::move(code)), config_(config), world_(config), resources_(config) {}
+    : code_(std::move(code)), config_(config), world_(config), resources_(config), structures_(config) {
+  world_.AttachObstacles(&resources_, &structures_);
+}
 
 bool Room::HasNickname(std::string_view nickname) const {
   return std::any_of(members_.begin(), members_.end(),
@@ -123,6 +126,105 @@ GatherOutcome Room::Gather(std::uint64_t client_id, std::uint32_t node_id) {
     ++member.stone;
   }
   outcome.status = GatherStatus::kOk;
+  outcome.wood = member.wood;
+  outcome.stone = member.stone;
+  return outcome;
+}
+
+bool Room::GrantResources(std::uint64_t client_id, std::uint32_t wood, std::uint32_t stone) {
+  const auto it = std::find_if(members_.begin(), members_.end(),
+                               [client_id](const Member& member) { return member.client_id == client_id; });
+  if (it == members_.end()) {
+    return false;
+  }
+  it->wood += wood;
+  it->stone += stone;
+  return true;
+}
+
+BuildOutcome Room::Build(std::uint64_t client_id, std::uint32_t structure_type, float x, float y) {
+  BuildOutcome outcome;
+  const auto it = std::find_if(members_.begin(), members_.end(),
+                               [client_id](const Member& member) { return member.client_id == client_id; });
+  if (it == members_.end()) {
+    outcome.status = BuildStatus::kNotInRoom;
+    return outcome;
+  }
+  Member& member = *it;
+  outcome.wood = member.wood;
+  outcome.stone = member.stone;
+
+  const PlayerBody* body = world_.Find(member.player_id);
+  if (body == nullptr) {
+    outcome.status = BuildStatus::kNotInRoom;  // 일어나지 않아야 하는 불일치
+    return outcome;
+  }
+
+  // 종류와 상한
+  const StructureType type = StructureType::kHouse;
+  if (structure_type != static_cast<std::uint32_t>(type)) {
+    outcome.status = BuildStatus::kInvalidType;
+    return outcome;
+  }
+  if (structures_.size() >= config_.max_structures) {
+    outcome.status = BuildStatus::kLimit;
+    return outcome;
+  }
+
+  // 좌표가 유한하지 않거나 맵보다 훨씬 크면 격자로 맞추기 전에 막는다(맵 밖이라 어차피 지을 수 없다).
+  const double limit = 1.0e9;
+  if (!std::isfinite(x) || !std::isfinite(y) || std::abs(static_cast<double>(x)) > limit ||
+      std::abs(static_cast<double>(y)) > limit) {
+    outcome.status = BuildStatus::kBlocked;
+    return outcome;
+  }
+
+  // 격자 중심으로 맞춘다.
+  float width = 0.0f;
+  float height = 0.0f;
+  structures_.FootprintOf(type, width, height);
+  const double grid = config_.build_grid_cm > 0.0f ? static_cast<double>(config_.build_grid_cm) : 1.0;
+  const double cx = std::round(static_cast<double>(x) / grid) * grid;
+  const double cy = std::round(static_cast<double>(y) / grid) * grid;
+
+  // 거리: 서버가 아는 내 위치에서 격자에 맞춘 중심까지(경계 포함)
+  const double range = static_cast<double>(config_.build_range_cm);
+  const double dx = static_cast<double>(body->x) - cx;
+  const double dy = static_cast<double>(body->y) - cy;
+  if (dx * dx + dy * dy > range * range) {
+    outcome.status = BuildStatus::kTooFar;
+    return outcome;
+  }
+
+  // 겹침: 맵 밖, 구조물, 고갈되지 않은 노드, 방 안의 모든 플레이어(몸 위에 지으면 갇힌다)
+  const Rect footprint{cx, cy, static_cast<double>(width) * 0.5, static_cast<double>(height) * 0.5};
+  bool blocked = footprint.cx - footprint.hw < 0.0 || footprint.cy - footprint.hh < 0.0 ||
+                 footprint.cx + footprint.hw > static_cast<double>(config_.map_width_cm) ||
+                 footprint.cy + footprint.hh > static_cast<double>(config_.map_height_cm);
+  for (const Structure& other : structures_.structures()) {
+    blocked = blocked || RectsOverlap(footprint, other.Footprint());
+  }
+  for (const ResourceNode& node : resources_.nodes()) {
+    blocked = blocked || (node.hp > 0 && CircleOverlapsRect(node.x, node.y, config_.node_collision_radius_cm, footprint));
+  }
+  for (const PlayerBody& player : world_.players()) {
+    blocked = blocked || CircleOverlapsRect(player.x, player.y, config_.player_radius_cm, footprint);
+  }
+  if (blocked) {
+    outcome.status = BuildStatus::kBlocked;
+    return outcome;
+  }
+
+  // 비용
+  if (member.wood < config_.house_cost_wood || member.stone < config_.house_cost_stone) {
+    outcome.status = BuildStatus::kNotEnoughResources;
+    return outcome;
+  }
+
+  member.wood -= config_.house_cost_wood;
+  member.stone -= config_.house_cost_stone;
+  outcome.structure_id = structures_.Add(type, static_cast<float>(cx), static_cast<float>(cy), world_.tick());
+  outcome.status = BuildStatus::kOk;
   outcome.wood = member.wood;
   outcome.stone = member.stone;
   return outcome;

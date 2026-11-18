@@ -85,6 +85,11 @@ const char* ResultText(game::protocol::GameResult code) {
     case game::protocol::GAME_NODE_DEPLETED: return "노드가 고갈되었습니다 (재생을 기다리는 중)";
     case game::protocol::GAME_TOO_FAR: return "너무 멀리 있습니다 (서버가 아는 내 위치 기준)";
     case game::protocol::GAME_GATHER_COOLDOWN: return "채집 쿨다운 중입니다";
+    case game::protocol::GAME_BUILD_INVALID_TYPE: return "모르는 건물 종류입니다";
+    case game::protocol::GAME_BUILD_BLOCKED: return "그 자리에는 지을 수 없습니다 (맵 밖, 건물/나무/돌/사람과 겹침)";
+    case game::protocol::GAME_NOT_ENOUGH_RESOURCES: return "자원이 모자랍니다 (집: 목재 20, 석재 10)";
+    case game::protocol::GAME_BUILD_TOO_FAR: return "너무 멀리 있습니다 (내 위치에서 500 cm 이내)";
+    case game::protocol::GAME_STRUCTURE_LIMIT: return "방의 건물 수 상한입니다";
     default: break;
   }
   return "알 수 없는 결과";
@@ -139,6 +144,8 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
                 << "  /snap <N>               N틱마다 위치 출력 (0이면 끔, 20이면 초당 1번)\n"
                 << "  /nodes                  자원 노드 목록(번호, 종류, 위치, 체력, 내 위치에서의 거리)\n"
                 << "  /gather [번호]          노드를 한 번 친다 (번호를 생략하면 가장 가까운 살아 있는 노드)\n"
+                << "  /build <x> <y>          그 자리(100 cm 격자로 맞춰짐)에 집을 짓는다. 내 위치에서 500 cm 이내, 목재 20 + 석재 10\n"
+                << "  /structures             건물 목록(번호, 위치, 건설 중/완료)\n"
                 << "  /ping                   서버 응답 확인\n"
                 << "  /wait <밀리초>          다음 줄 처리를 늦춤 (스크립트용)\n"
                 << "  /quit                   종료\n";
@@ -177,6 +184,26 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
       }
       snapshot_every_ = every;
       std::cout << "위치 출력 주기: " << (every == 0 ? "끔" : std::to_string(every) + "틱마다") << "\n";
+    } else if (command == "/build") {
+      float x = 0.0f;
+      float y = 0.0f;
+      if (!(words >> x >> y)) {
+        std::cout << "사용법: /build <x> <y> (예: /build 2600 2400)\n";
+        return;
+      }
+      game::protocol::BuildRequest request;
+      request.set_structure_type(game::protocol::STRUCTURE_HOUSE);
+      request.set_x(x);
+      request.set_y(y);
+      Send(MessageId::kBuildRequest, request);
+    } else if (command == "/structures") {
+      if (structures_.empty()) {
+        std::cout << "건물이 없습니다.\n";
+      }
+      for (const auto& [id, s] : structures_) {
+        std::cout << "  " << id << "번 집 @(" << s.x() << ", " << s.y() << ") "
+                  << (s.state() == game::protocol::STRUCTURE_COMPLETE ? "완료" : "건설 중") << "\n";
+      }
     } else if (command == "/nodes") {
       PrintNodes();
     } else if (command == "/gather") {
@@ -304,7 +331,11 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
     for (const auto& node : state.nodes()) {
       nodes_[node.node_id()] = NodeInfo{node.kind(), node.x(), node.y(), node.hp(), node.max_hp()};
     }
-    std::cout << "  자원 노드 " << nodes_.size() << "개 (/nodes 로 목록)\n";
+    structures_.clear();
+    for (const auto& structure : state.structures()) {
+      structures_[structure.structure_id()] = structure;
+    }
+    std::cout << "  자원 노드 " << nodes_.size() << "개 (/nodes 로 목록), 건물 " << structures_.size() << "개 (/structures)\n";
     std::cout << "  방 코드 " << state.room_code() << " / 내 번호 " << state.your_player_id() << " / 방장 번호 "
               << state.host_player_id() << "\n  접속자:";
     for (const auto& player : state.players()) {
@@ -393,6 +424,24 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
                   << " 석재 " << r.stone() << "\n";
         return;
       }
+      case MessageId::kBuildResponse: {
+        game::protocol::BuildResponse r;
+        if (!parse(r)) break;
+        std::cout << "[건설] " << ResultText(r.result());
+        if (r.result() == game::protocol::GAME_OK) std::cout << " (건물 " << r.structure_id() << "번)";
+        std::cout << " / 내 목재 " << r.wood() << " 석재 " << r.stone() << "\n";
+        return;
+      }
+      case MessageId::kStructureUpdate: {
+        game::protocol::StructureUpdate u;
+        if (!parse(u)) break;
+        for (const auto& s : u.structures()) {
+          structures_[s.structure_id()] = s;
+          std::cout << "[건물] 틱 " << u.tick() << ": " << s.structure_id() << "번 @(" << s.x() << ", " << s.y() << ") "
+                    << (s.state() == game::protocol::STRUCTURE_COMPLETE ? "완료" : "건설 중") << "\n";
+        }
+        return;
+      }
       case MessageId::kResourceUpdate: {
         game::protocol::ResourceUpdate u;
         if (!parse(u)) break;
@@ -467,6 +516,7 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
   float my_x_ = 0.0f;  // 마지막 스냅샷에서 받은 내 위치
   float my_y_ = 0.0f;
   std::map<std::uint32_t, NodeInfo> nodes_;  // 방 상태와 ResourceUpdate로 유지하는 노드 목록
+  std::map<std::uint32_t, game::protocol::Structure> structures_;  // 방 상태와 StructureUpdate로 유지하는 건물 목록
 };
 
 bool ParseArgs(int argc, char** argv, Options& options, bool& help) {
