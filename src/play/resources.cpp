@@ -30,6 +30,17 @@ class LayoutRandom {
 
 constexpr int kPlacementAttempts = 1000;  // 노드 하나를 놓을 자리를 찾는 최대 시도 횟수
 
+// 노드 중심 (x, y)가 건설 구역(노드 충돌 반지름만큼 넓힌 정사각형) 안인가. 노드는 건설 구역 밖에만 둔다.
+// 구역 제한이 없으면(0) 항상 false다. 정확히 경계에 닿는 것은 안이 아니다.
+bool InsideBuildZone(const PlayConfig& config, float x, float y) {
+  if (config.build_zone_half_size_cm <= 0.0f) {
+    return false;
+  }
+  const double reach = static_cast<double>(config.build_zone_half_size_cm) + config.node_collision_radius_cm;
+  return std::abs(static_cast<double>(x) - config.map_width_cm * 0.5) < reach &&
+         std::abs(static_cast<double>(y) - config.map_height_cm * 0.5) < reach;
+}
+
 }  // namespace
 
 ResourceField::ResourceField(const PlayConfig& config) : config_(config) {
@@ -54,6 +65,10 @@ ResourceField::ResourceField(const PlayConfig& config) : config_(config) {
         // 시작 위치 근처는 비운다.
         if (std::hypot(static_cast<double>(x - center_x), static_cast<double>(y - center_y)) <
             static_cast<double>(config.spawn_clear_radius_cm)) {
+          continue;
+        }
+        // 건설 구역 안에는 두지 않는다(건물이 차지할 자리를 비워 둔다).
+        if (InsideBuildZone(config, x, y)) {
           continue;
         }
         // 다른 노드와 너무 가까우면 안 된다.
@@ -130,13 +145,80 @@ ResourceKind ResourceField::Hit(std::uint32_t node_id, std::uint64_t tick) {
   return node->kind;
 }
 
-std::uint32_t ResourceField::Advance(std::uint64_t tick) {
+bool ResourceField::FindRespawnSpot(std::uint32_t node_id, std::uint64_t tick, const SpotBlockers& blockers, float& out_x,
+                                    float& out_y) const {
+  // 노드 번호와 틱으로 시드를 정한다. 같은 설정과 같은 틱이면 같은 자리가 나온다(시험이 결정적이다).
+  LayoutRandom random(config_.layout_seed ^ (static_cast<std::uint64_t>(node_id) << 32) ^ tick);
+  const float margin = config_.node_edge_margin_cm;
+  const float span_x = config_.map_width_cm - 2.0f * margin;
+  const float span_y = config_.map_height_cm - 2.0f * margin;
+  const float center_x = config_.map_width_cm * 0.5f;
+  const float center_y = config_.map_height_cm * 0.5f;
+  if (span_x <= 0.0f || span_y <= 0.0f) {
+    return false;
+  }
+  const double node_radius = static_cast<double>(config_.node_collision_radius_cm);
+
+  for (int attempt = 0; attempt < kPlacementAttempts; ++attempt) {
+    const float x = margin + random.Next01() * span_x;
+    const float y = margin + random.Next01() * span_y;
+    // 시작 위치 근처는 비운다(배치 때와 같은 규칙).
+    if (std::hypot(static_cast<double>(x - center_x), static_cast<double>(y - center_y)) <
+        static_cast<double>(config_.spawn_clear_radius_cm)) {
+      continue;
+    }
+    // 건설 구역 안에는 나타나지 않는다(처음 배치와 같은 규칙).
+    if (InsideBuildZone(config_, x, y)) {
+      continue;
+    }
+    // 다른 노드와 너무 가까우면 안 된다(고갈된 노드의 옛 자리도 포함한다).
+    const bool too_close = std::any_of(nodes_.begin(), nodes_.end(), [&](const ResourceNode& other) {
+      return other.id != node_id &&
+             std::hypot(static_cast<double>(x - other.x), static_cast<double>(y - other.y)) <
+                 static_cast<double>(config_.node_min_gap_cm);
+    });
+    if (too_close) {
+      continue;
+    }
+    // 구조물 발자국과 겹치면 안 된다(노드가 집 안에 들어가면 안 된다).
+    const bool in_structure = std::any_of(blockers.rects.begin(), blockers.rects.end(), [&](const Rect& rect) {
+      return CircleOverlapsRect(x, y, node_radius, rect);
+    });
+    if (in_structure) {
+      continue;
+    }
+    // 플레이어 몸 위에 나타나면 안 된다(방금 서 있던 사람이 갇힌다).
+    const bool on_player = std::any_of(blockers.circles.begin(), blockers.circles.end(), [&](const SpotBlockers::Circle& c) {
+      const double dx = static_cast<double>(x) - c.x;
+      const double dy = static_cast<double>(y) - c.y;
+      return dx * dx + dy * dy < c.r * c.r;
+    });
+    if (on_player) {
+      continue;
+    }
+    out_x = x;
+    out_y = y;
+    return true;
+  }
+  return false;
+}
+
+std::uint32_t ResourceField::Advance(std::uint64_t tick, const SpotBlockers& blockers) {
   if (depleted_count_ == 0) {
     return 0;
   }
   std::uint32_t respawned = 0;
   for (auto& node : nodes_) {
     if (node.hp == 0 && tick >= node.respawn_tick) {
+      float x = 0.0f;
+      float y = 0.0f;
+      if (!FindRespawnSpot(node.id, tick, blockers, x, y)) {
+        // 지금은 자리가 없다. 고갈 상태로 남고 respawn_retry_ticks 뒤에 다시 찾는다(매 틱 찾지 않는다).
+        node.respawn_tick = tick + std::max<std::uint32_t>(1, config_.respawn_retry_ticks);
+        continue;
+      }
+      node.x = x;
+      node.y = y;
       node.hp = node.max_hp;
       --depleted_count_;
       ++respawned;
@@ -157,7 +239,7 @@ std::vector<ResourceField::Change> ResourceField::TakeChanges() {
   std::vector<Change> changes;
   changes.reserve(changed_ids_.size());
   for (const std::uint32_t id : changed_ids_) {
-    changes.push_back(Change{id, nodes_[id - 1].hp});
+    changes.push_back(Change{id, nodes_[id - 1].hp, nodes_[id - 1].x, nodes_[id - 1].y});
   }
   changed_ids_.clear();
   return changes;

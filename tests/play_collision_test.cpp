@@ -20,6 +20,7 @@ PlayConfig Empty() {
   PlayConfig config;
   config.tree_count = 0;
   config.rock_count = 0;
+  config.build_zone_half_size_cm = 0.0f;  // 구역 제한 없음: 노드가 중앙 가까이에도 놓인다
   return config;
 }
 
@@ -222,21 +223,13 @@ TEST(CollisionTest, ARespawningNodeUnderThePlayerDoesNotTrapThem) {
   Go(room, player, seq, 0.0f, 0.0f);
   ASSERT_LT(std::hypot(node.x - body->x, node.y - body->y), 20.0) << "노드 안까지 걸어 들어갔다";
 
-  // 노드가 재생한다: 이제 몸이 살아 있는 노드와 겹쳐 있다
-  room.resources().Advance(room.world().tick() + 200000);
-  ASSERT_GT(room.resources().Find(node.id)->hp, 0u);
-  ASSERT_TRUE(Overlapping(room, config, *body));
-
-  // 이미 겹친 장애물과는 충돌하지 않으므로 어느 방향으로든 빠져나올 수 있다.
-  Go(room, player, seq, 1.0f, 0.0f);
-  double far = 0.0;
-  for (int i = 0; i < 20; ++i) {
-    RunTicks(room, 1);
-    body = room.world().Find(player);
-    far = std::hypot(body->x - node.x, body->y - node.y);
-  }
-  EXPECT_GE(far, config.player_radius_cm + config.node_collision_radius_cm) << "빠져나왔다";
-  EXPECT_FALSE(Overlapping(room, config, *body));
+  // 노드가 재생한다. 재생 자리는 플레이어 몸을 피해 고르므로 노드는 몸 밖에 나타나고 몸은 갇히지 않는다.
+  room.AdvanceResources(room.world().tick() + 200000);
+  const ResourceNode respawned = *room.resources().Find(node.id);
+  ASSERT_GT(respawned.hp, 0u);
+  EXPECT_FALSE(Overlapping(room, config, *body)) << "재생 자리가 플레이어 몸과 겹치면 안 된다";
+  EXPECT_GE(std::hypot(respawned.x - body->x, respawned.y - body->y),
+            config.player_radius_cm + config.node_collision_radius_cm);
 }
 
 // ============================================================ 겹쳐 있는 채로 시작, 입장 위치
@@ -272,7 +265,7 @@ TEST(CollisionTest, WithoutObstaclesTheMovementIsExactlyTheOldFormula) {
   world.AddPlayer(1, 0);
   world.SetInput(1, 1, 1.0f, 0.0f);
   world.Step(kDt);
-  EXPECT_EQ(world.Find(1)->x, 2400.0f + 300.0f * kDt);
+  EXPECT_EQ(world.Find(1)->x, 2400.0f + 360.0f * kDt);
 }
 
 }  // namespace

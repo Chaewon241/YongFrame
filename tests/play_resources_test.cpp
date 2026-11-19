@@ -221,6 +221,135 @@ TEST(ResourceFieldTest, RespawnsExactlyAfterTheConfiguredTicks) {
   EXPECT_EQ(field.Advance(1601), 0u) << "이미 재생했으면 다시 세지 않는다";
 }
 
+TEST(ResourceFieldTest, RespawnLeavesTheStructureSpotAndIsDeterministic) {
+  PlayConfig config;
+  config.tree_count = 1;
+  config.rock_count = 0;
+  config.tree_hp = 1;
+  config.respawn_ticks = 10;
+
+  // 옛 자리 위에 집이 있다고 하자. 재생한 노드는 집 밖, 맵 안쪽에 나타난다.
+  ResourceField field(config);
+  const std::uint32_t id = field.nodes()[0].id;
+  const ResourceNode before = *field.Find(id);
+  field.Hit(id, 0);
+  SpotBlockers blockers;
+  blockers.rects.push_back(Rect{static_cast<double>(before.x), static_cast<double>(before.y), 150.0, 150.0});
+  EXPECT_EQ(field.Advance(10, blockers), 1u);
+  const ResourceNode after = *field.Find(id);
+  EXPECT_FALSE(CircleOverlapsRect(after.x, after.y, config.node_collision_radius_cm, blockers.rects[0])) << "집 밖에 나타난다";
+  EXPECT_GE(after.x, config.node_edge_margin_cm);
+  EXPECT_LE(after.x, config.map_width_cm - config.node_edge_margin_cm);
+  EXPECT_GE(after.y, config.node_edge_margin_cm);
+  EXPECT_LE(after.y, config.map_height_cm - config.node_edge_margin_cm);
+
+  // 같은 설정, 같은 틱, 같은 막힌 곳이면 같은 자리다.
+  ResourceField again(config);
+  again.Hit(id, 0);
+  EXPECT_EQ(again.Advance(10, blockers), 1u);
+  EXPECT_FLOAT_EQ(again.Find(id)->x, after.x);
+  EXPECT_FLOAT_EQ(again.Find(id)->y, after.y);
+}
+
+TEST(ResourceFieldTest, StaysDepletedWhileNoSpotIsFreeAndRespawnsLater) {
+  PlayConfig config;
+  config.tree_count = 1;
+  config.rock_count = 0;
+  config.tree_hp = 1;
+  config.respawn_ticks = 10;
+  ResourceField field(config);
+  const std::uint32_t id = field.nodes()[0].id;
+  field.Hit(id, 0);
+
+  // 맵 전체가 막혀 있으면 자리가 없다. 고갈 상태로 남고 세지 않는다.
+  SpotBlockers everywhere;
+  everywhere.rects.push_back(Rect{2500.0, 2500.0, 2500.0, 2500.0});
+  EXPECT_EQ(field.Advance(10, everywhere), 0u);
+  EXPECT_EQ(field.Find(id)->hp, 0u);
+
+  // 자리를 못 찾으면 매 틱 다시 찾지 않고 respawn_retry_ticks(20) 뒤에 다시 찾는다. 막힌 것이 없어져도 그때까지는 기다린다.
+  EXPECT_EQ(field.Advance(11, SpotBlockers{}), 0u) << "재시도 시각(30틱) 전에는 찾지 않는다";
+  EXPECT_EQ(field.Advance(29, SpotBlockers{}), 0u);
+  EXPECT_EQ(field.Advance(30, SpotBlockers{}), 1u) << "정확히 재시도 시각에 다시 찾아 재생한다";
+  EXPECT_EQ(field.Find(id)->hp, config.tree_hp);
+}
+
+TEST(ResourceFieldTest, ARetryThatFailsAgainWaitsAnotherInterval) {
+  PlayConfig config;
+  config.tree_count = 1;
+  config.rock_count = 0;
+  config.tree_hp = 1;
+  config.respawn_ticks = 10;
+  config.respawn_retry_ticks = 7;
+  ResourceField field(config);
+  const std::uint32_t id = field.nodes()[0].id;
+  field.Hit(id, 0);
+  SpotBlockers everywhere;
+  everywhere.rects.push_back(Rect{2500.0, 2500.0, 2500.0, 2500.0});
+  EXPECT_EQ(field.Advance(10, everywhere), 0u);  // 첫 시도 실패 -> 17틱에 다시
+  EXPECT_EQ(field.Advance(16, SpotBlockers{}), 0u);
+  EXPECT_EQ(field.Advance(17, everywhere), 0u);  // 둘째 시도도 실패 -> 24틱에 다시
+  EXPECT_EQ(field.Advance(23, SpotBlockers{}), 0u);
+  EXPECT_EQ(field.Advance(24, SpotBlockers{}), 1u);
+}
+
+// ============================================================ 구역 분리 (건설 구역 안에는 노드를 두지 않는다)
+
+// 노드 중심이 건설 구역(노드 충돌 반지름만큼 넓힌 정사각형) 안인가.
+bool InsideZone(const PlayConfig& config, const ResourceNode& node) {
+  const double reach = config.build_zone_half_size_cm + config.node_collision_radius_cm;
+  return std::abs(node.x - config.map_width_cm * 0.5) < reach && std::abs(node.y - config.map_height_cm * 0.5) < reach;
+}
+
+TEST(ResourceFieldTest, NodesAreNeverPlacedInsideTheBuildZone) {
+  const PlayConfig config;
+  const ResourceField field(config);
+  ASSERT_EQ(field.nodes().size(), config.tree_count + config.rock_count) << "구역 밖에 자리가 충분해서 모두 놓인다";
+  for (const ResourceNode& node : field.nodes()) {
+    EXPECT_FALSE(InsideZone(config, node)) << node.id << " (" << node.x << ", " << node.y << ")";
+  }
+}
+
+TEST(ResourceFieldTest, NodesJustOutsideTheZoneEdgeAreAllowedButNotInside) {
+  // 구역 크기를 키우면 노드가 더 바깥으로 밀려난다.
+  PlayConfig wide;
+  wide.build_zone_half_size_cm = 2000.0f;
+  const ResourceField field(wide);
+  ASSERT_GT(field.nodes().size(), 0u);
+  for (const ResourceNode& node : field.nodes()) {
+    EXPECT_FALSE(InsideZone(wide, node)) << node.id;
+  }
+}
+
+TEST(ResourceFieldTest, WithoutAZoneNodesMayBeNearTheCenterAsBefore) {
+  PlayConfig config;
+  config.build_zone_half_size_cm = 0.0f;  // 구역 제한 없음
+  const ResourceField field(config);
+  bool nearCenter = false;
+  for (const ResourceNode& node : field.nodes()) {
+    nearCenter = nearCenter || (std::abs(node.x - 2500.0f) < 1200.0f && std::abs(node.y - 2500.0f) < 1200.0f);
+  }
+  EXPECT_TRUE(nearCenter) << "구역을 끄면 중앙 가까이에도 놓인다(구역 규칙이 이 차이를 만든다)";
+}
+
+TEST(ResourceFieldTest, RespawnedNodesNeverLandInsideTheBuildZone) {
+  PlayConfig config;
+  config.tree_count = 10;
+  config.rock_count = 0;
+  config.tree_hp = 1;
+  config.respawn_ticks = 1;
+  ResourceField field(config);
+  for (std::uint64_t round = 0; round < 200; ++round) {
+    const std::uint64_t tick = round * 3;
+    for (const ResourceNode& node : field.nodes()) field.Hit(node.id, tick);
+    field.Advance(tick + 1);
+    for (const ResourceNode& node : field.nodes()) {
+      ASSERT_GT(node.hp, 0u) << "라운드 " << round;
+      ASSERT_FALSE(InsideZone(config, node)) << "라운드 " << round << " 노드 " << node.id << " (" << node.x << ", " << node.y << ")";
+    }
+  }
+}
+
 TEST(ResourceFieldTest, AdvanceWithNothingDepletedChangesNothing) {
   ResourceField field(PlayConfig{});
   EXPECT_EQ(field.Advance(100000), 0u);

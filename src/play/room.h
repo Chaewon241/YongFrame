@@ -53,7 +53,8 @@ enum class BuildStatus {
   kInvalidType,         // 모르는 건물 종류
   kLimit,               // 방의 구조물 수 상한
   kTooFar,              // 서버가 아는 내 위치에서 건설 허용 거리 밖
-  kBlocked,             // 맵 밖, 구조물/노드/플레이어와 겹침, 잘못된 좌표
+  kOutOfZone,           // 건물 발자국이 건설 구역(맵 중앙 정사각형) 밖으로 나감
+  kBlocked,            // 맵 밖, 구조물/노드/플레이어와 겹침, 잘못된 좌표
   kNotEnoughResources,  // 비용 부족
 };
 
@@ -105,6 +106,9 @@ class Room {
   // 거부되면 아무 상태도 바뀌지 않는다. 시간은 이 방 월드의 틱 번호다.
   GatherOutcome Gather(std::uint64_t client_id, std::uint32_t node_id);
 
+  // 재생할 노드를 되살린다. 재생 자리는 구조물 발자국과 플레이어 몸을 피한다. 되살린 노드 수를 돌려준다.
+  std::uint32_t AdvanceResources(std::uint64_t tick);
+
   // 연결의 인벤토리에 자원을 더한다(보상, 시험용). 이 방에 없는 연결이면 false.
   bool GrantResources(std::uint64_t client_id, std::uint32_t wood, std::uint32_t stone);
 
@@ -112,7 +116,7 @@ class Room {
   const StructureSet& structures() const { return structures_; }
 
   // 연결이 건물을 짓는다. (x, y)는 짓고 싶은 중심이며 build_grid_cm 격자의 중심으로 맞춘다.
-  // 판정 순서: 방에 없음 -> 모르는 종류 -> 구조물 상한 -> 너무 멂 -> 겹침/맵 밖 -> 자원 부족.
+  // 판정 순서: 방에 없음 -> 모르는 종류 -> 구조물 상한 -> 너무 멂 -> 건설 구역 밖 -> 겹침/맵 밖 -> 자원 부족.
   // 거부되면 아무 상태도 바뀌지 않는다. 성공하면 비용을 차감하고 건설 중 구조물을 만든다. 시간은 월드 틱이다.
   BuildOutcome Build(std::uint64_t client_id, std::uint32_t structure_type, float x, float y);
 

@@ -20,6 +20,7 @@ PlayConfig OpenField() {
   config.tree_count = 0;
   config.rock_count = 0;
   config.build_range_cm = 100000.0f;
+  config.build_zone_half_size_cm = 0.0f;  // 구역 제한 없음(구역은 아래 별도 시험에서 다룬다)
   return config;
 }
 
@@ -328,6 +329,76 @@ TEST(RoomBuildTest, TheInventoryIsLostWhenLeavingAndBuildingKeepsStandingForTheO
   room.RemoveMember(1);
   EXPECT_EQ(room.structures().size(), 1u) << "지은 사람이 나가도 건물은 남는다";
   EXPECT_EQ(room.Build(1, 0, 2600.0f, 2900.0f).status, BuildStatus::kNotInRoom);
+}
+
+// ============================================================ 건설 구역 (맵 중앙 정사각형 안에만 지을 수 있다)
+
+// 구역 [1300, 3700] x [1300, 3700] (중앙 2500, 반 1200), 거리 제한 없음, 격자 50 cm
+PlayConfig ZoneField() {
+  PlayConfig config = OpenField();
+  config.build_zone_half_size_cm = 1200.0f;
+  config.build_grid_cm = 50.0f;
+  return config;
+}
+
+TEST(RoomBuildZoneTest, TheZoneEdgeIsInclusiveAndOneGridStepOutIsRejected) {
+  // 집 폭 300: 중심 1450이면 1300~1600으로 구역 왼쪽 경계에 정확히 닿는다.
+  struct Case {
+    float x;
+    float y;
+    bool ok;
+  };
+  for (const Case c : {Case{1450.0f, 2500.0f, true}, Case{1400.0f, 2500.0f, false},     // 왼쪽
+                       Case{3550.0f, 2500.0f, true}, Case{3600.0f, 2500.0f, false},     // 오른쪽
+                       Case{2500.0f, 1450.0f, true}, Case{2500.0f, 1400.0f, false},     // 아래
+                       Case{2500.0f, 3550.0f, true}, Case{2500.0f, 3600.0f, false}}) {  // 위
+    Room room("111111", ZoneField());
+    Prepare(room);
+    const BuildStatus status = room.Build(1, 0, c.x, c.y).status;
+    EXPECT_EQ(status == BuildStatus::kOk, c.ok) << c.x << ", " << c.y;
+    if (!c.ok) {
+      EXPECT_EQ(status, BuildStatus::kOutOfZone) << c.x << ", " << c.y;
+      EXPECT_EQ(room.structures().size(), 0u) << "거부는 구조물을 만들지 않는다";
+      EXPECT_EQ(room.FindByClient(1)->wood, 100u) << "구역 밖이면 비용을 받지 않는다";
+    }
+  }
+}
+
+TEST(RoomBuildZoneTest, ADisabledZoneAllowsTheWholeMapAsBefore) {
+  PlayConfig config = ZoneField();
+  config.build_zone_half_size_cm = 0.0f;
+  Room room("111111", config);
+  Prepare(room);
+  EXPECT_EQ(room.Build(1, 0, 150.0f, 150.0f).status, BuildStatus::kOk);
+}
+
+TEST(RoomBuildZoneTest, TheRejectionOrderPutsTheZoneAfterReachAndBeforeOverlapAndCost) {
+  PlayConfig config = ZoneField();
+  config.build_range_cm = 500.0f;
+  Room room("111111", config);
+  Prepare(room, 0, 0);  // 자원도 없다
+  // 멀고 구역 밖: 멂이 먼저
+  EXPECT_EQ(room.Build(1, 0, 500.0f, 500.0f).status, BuildStatus::kTooFar);
+
+  // 닿는 거리 안에서 구역 밖: 자원이 없어도 구역 밖이 먼저. (구역 경계 1300에 닿으려면 내가 가까이 있어야 한다)
+  PlayConfig near_edge = config;
+  near_edge.map_width_cm = 2000.0f;  // 시작 위치가 (900, 900)이 되어 구역 [..]과 가까운 작은 맵
+  near_edge.map_height_cm = 2000.0f;
+  near_edge.build_zone_half_size_cm = 400.0f;  // 구역 [600, 1400]
+  near_edge.node_collision_radius_cm = 60.0f;
+  near_edge.tree_count = 0;
+  near_edge.rock_count = 0;
+  Room small("222222", near_edge);
+  Prepare(small, 0, 0);
+  // 시작 위치 (900, 900). 구역 오른쪽 경계(1400)를 넘는 (1450, 900)은 내 몸과 겹치지 않고 거리 550... 
+  EXPECT_EQ(small.Build(1, 0, 1350.0f, 900.0f).status, BuildStatus::kOutOfZone) << "(1350, 900): 발자국 1200~1500이 구역(~1400) 밖, 자원도 없지만 구역이 먼저";
+  EXPECT_EQ(small.Build(1, 0, 1250.0f, 900.0f).status, BuildStatus::kNotEnoughResources) << "구역 안이면 그다음 판정(자원 부족)";
+}
+
+TEST(RoomBuildZoneTest, ThePlayersStartInsideTheZoneAndBuildingInsideIsUnaffected) {
+  Room room("111111", ZoneField());
+  Prepare(room);
+  EXPECT_EQ(room.Build(1, 0, 2600.0f, 2400.0f).status, BuildStatus::kOk);
 }
 
 }  // namespace

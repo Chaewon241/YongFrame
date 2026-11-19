@@ -13,7 +13,7 @@ struct PlayConfig {
   float map_width_cm = 5000.0f;
   float map_height_cm = 5000.0f;
 
-  float move_speed_cm_per_s = 300.0f;  // 방향 벡터 길이 1일 때의 속도
+  float move_speed_cm_per_s = 360.0f;  // 방향 벡터 길이 1일 때의 속도(이전 300, 조정함)
   float player_radius_cm = 40.0f;      // 맵 경계 처리에만 쓴다(플레이어끼리는 충돌하지 않는다)
 
   std::uint32_t max_players = 4;    // 한 방의 최대 인원
@@ -46,6 +46,14 @@ struct PlayConfig {
   std::uint32_t build_ticks = 100;           // 건설 중 상태가 이어지는 틱 수(5초)
   std::uint32_t max_structures = 20;         // 방당 구조물 상한
   float node_collision_radius_cm = 60.0f;    // 나무/돌이 이동을 막는 원의 반지름(고갈되면 막지 않는다)
+
+  // ---- 구역 분리 (docs/content-roadmap.md "구역 분리"). 임의 기본값 ----
+  // 맵 중앙의 정사각형(한 변 = 이 값의 2배)이 건설 구역이다. 건물은 발자국 전체가 이 안에만 들어갈 수 있고, 자원 노드는
+  // 이 구역(노드 충돌 반지름만큼 넓힌 것)의 밖에만 놓이고 재생한다. 그래서 건물이 아무리 늘어도 노드가 설 자리가 줄지 않는다.
+  // 0이면 구역 제한이 없다(건물은 맵 어디든, 노드는 시작 영역만 피해 어디든).
+  float build_zone_half_size_cm = 1200.0f;
+  // 재생할 자리를 못 찾았을 때 다시 찾기까지 기다리는 틱 수(매 틱 찾지 않는다)
+  std::uint32_t respawn_retry_ticks = 20;
 
   float TickSeconds() const { return 1.0f / static_cast<float>(tick_rate_hz == 0 ? 1 : tick_rate_hz); }
 };

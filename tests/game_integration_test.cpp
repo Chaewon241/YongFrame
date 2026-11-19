@@ -171,7 +171,7 @@ TEST(GameIntegration, BothPlayersSeeEachOthersMovementFromTheServer) {
   }
 }
 
-// 서버 판정: 클라이언트가 방향 벡터를 부풀려도 틱당 이동 거리(15 cm)를 넘을 수 없다.
+// 서버 판정: 클라이언트가 방향 벡터를 부풀려도 틱당 이동 거리(18 cm)를 넘을 수 없다.
 TEST(GameIntegration, ClientCannotMoveFasterThanTheServerAllows) {
   TestServer server;
   std::string code;
@@ -194,13 +194,13 @@ TEST(GameIntegration, ClientCannotMoveFasterThanTheServerAllows) {
     const float dx = FindPlayer(next, alice.id)->x() - FindPlayer(previous, alice.id)->x();
     const auto ticks = static_cast<float>(next.tick() - previous.tick());
     max_dx_per_tick = std::max(max_dx_per_tick, dx / ticks);
-    EXPECT_LE(dx, 15.0f * ticks + 0.01f) << "틱 " << previous.tick() << " -> " << next.tick();
+    EXPECT_LE(dx, 18.0f * ticks + 0.01f) << "틱 " << previous.tick() << " -> " << next.tick();
     previous = next;
   }
-  // 움직이기는 했고(입력이 반영됨), 틱당 15 cm(300 cm/s)를 넘지 않았다.
+  // 움직이기는 했고(입력이 반영됨), 틱당 18 cm(360 cm/s)를 넘지 않았다.
   EXPECT_GT(FindPlayer(previous, alice.id)->x(), start_x + 50.0f);
-  EXPECT_LE(max_dx_per_tick, 15.01f);
-  EXPECT_LE(FindPlayer(previous, alice.id)->x() - start_x, 15.0f * static_cast<float>(previous.tick() - start_tick) + 0.01f);
+  EXPECT_LE(max_dx_per_tick, 18.01f);
+  EXPECT_LE(FindPlayer(previous, alice.id)->x() - start_x, 18.0f * static_cast<float>(previous.tick() - start_tick) + 0.01f);
 }
 
 TEST(GameIntegration, SnapshotsAreIsolatedPerRoom) {
@@ -443,6 +443,17 @@ TEST(GameIntegration, BuildRejectionsKeepTheConnectionAndTheInventory) {
   EXPECT_EQ(ok.wood(), 0u);
   EXPECT_TRUE(PingWorksInGame(*alice.client));
   EXPECT_EQ(server.game_stats().builds_rejected.load(), 4u);
+}
+
+TEST(GameIntegration, BuildingOutsideTheZoneIsRejectedOverTcp) {
+  server::ServerConfig config = BuildServerConfig();
+  config.play.build_range_cm = 100000.0f;
+  TestServer server(config);
+  auto alice = CreateRoomPlayer(server, "alice", nullptr);
+  Equip(*alice.client);
+  EXPECT_EQ(Build(*alice.client, 500.0f, 500.0f).result(), protocol::GAME_BUILD_OUT_OF_ZONE);
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2800.0f).result(), protocol::GAME_OK) << "구역 안은 지을 수 있다";
+  EXPECT_TRUE(PingWorksInGame(*alice.client));
 }
 
 TEST(GameIntegration, BuildingOutsideARoomIsRejectedWithoutClosingTheConnection) {

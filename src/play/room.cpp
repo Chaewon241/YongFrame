@@ -131,6 +131,21 @@ GatherOutcome Room::Gather(std::uint64_t client_id, std::uint32_t node_id) {
   return outcome;
 }
 
+std::uint32_t Room::AdvanceResources(std::uint64_t tick) {
+  // 재생 자리를 피할 것: 구조물 발자국(건설 중인 것도 포함), 플레이어 몸(노드 반지름을 더해 서 있는 자리에 나타나지 않게).
+  SpotBlockers blockers;
+  blockers.rects.reserve(structures_.structures().size());
+  for (const Structure& structure : structures_.structures()) {
+    blockers.rects.push_back(structure.Footprint());
+  }
+  const double player_reach = static_cast<double>(config_.player_radius_cm) + config_.node_collision_radius_cm;
+  blockers.circles.reserve(world_.players().size());
+  for (const PlayerBody& body : world_.players()) {
+    blockers.circles.push_back(SpotBlockers::Circle{static_cast<double>(body.x), static_cast<double>(body.y), player_reach});
+  }
+  return resources_.Advance(tick, blockers);
+}
+
 bool Room::GrantResources(std::uint64_t client_id, std::uint32_t wood, std::uint32_t stone) {
   const auto it = std::find_if(members_.begin(), members_.end(),
                                [client_id](const Member& member) { return member.client_id == client_id; });
@@ -198,6 +213,17 @@ BuildOutcome Room::Build(std::uint64_t client_id, std::uint32_t structure_type, 
 
   // 겹침: 맵 밖, 구조물, 고갈되지 않은 노드, 방 안의 모든 플레이어(몸 위에 지으면 갇힌다)
   const Rect footprint{cx, cy, static_cast<double>(width) * 0.5, static_cast<double>(height) * 0.5};
+  // 건설 구역: 발자국 전체가 맵 중앙의 구역 안에 있어야 한다(경계에 닿는 것은 허용). 0이면 제한 없음.
+  if (config_.build_zone_half_size_cm > 0.0f) {
+    const double zone = static_cast<double>(config_.build_zone_half_size_cm);
+    const double zone_x = static_cast<double>(config_.map_width_cm) * 0.5;
+    const double zone_y = static_cast<double>(config_.map_height_cm) * 0.5;
+    if (footprint.cx - footprint.hw < zone_x - zone || footprint.cx + footprint.hw > zone_x + zone ||
+        footprint.cy - footprint.hh < zone_y - zone || footprint.cy + footprint.hh > zone_y + zone) {
+      outcome.status = BuildStatus::kOutOfZone;
+      return outcome;
+    }
+  }
   bool blocked = footprint.cx - footprint.hw < 0.0 || footprint.cy - footprint.hh < 0.0 ||
                  footprint.cx + footprint.hw > static_cast<double>(config_.map_width_cm) ||
                  footprint.cy + footprint.hh > static_cast<double>(config_.map_height_cm);

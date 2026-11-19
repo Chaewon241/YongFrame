@@ -1,5 +1,5 @@
 // World 단위 테스트: 이동 계산만 검증한다. 소켓, 방, 시간이 필요 없는 순수 계산이라 결과가 결정적이다.
-// 기본값: 맵 5,000 x 5,000 cm, 속도 300 cm/s, 반지름 40 cm, 틱 20Hz(dt = 0.05초).
+// 기본값: 맵 5,000 x 5,000 cm, 속도 360 cm/s, 반지름 40 cm, 틱 20Hz(dt = 0.05초).
 
 #include <gtest/gtest.h>
 
@@ -69,8 +69,8 @@ TEST(WorldTest, PlayersDoNotMoveWithoutInput) {
 TEST(WorldTest, MovesAtTheConfiguredSpeed) {
   World world = WorldWithOne();
   ASSERT_EQ(world.SetInput(1, 1, 1.0f, 0.0f), InputResult::kApplied);
-  StepSeconds(world, 1.0f);  // 300 cm/s x 1초
-  EXPECT_NEAR(world.Find(1)->x, 2700.0f, 0.01f);
+  StepSeconds(world, 1.0f);  // 360 cm/s x 1초
+  EXPECT_NEAR(world.Find(1)->x, 2760.0f, 0.01f);
   EXPECT_FLOAT_EQ(world.Find(1)->y, 2400.0f);
 }
 
@@ -78,7 +78,7 @@ TEST(WorldTest, SubUnitDirectionMovesProportionallySlower) {
   World world = WorldWithOne();
   ASSERT_EQ(world.SetInput(1, 1, 0.0f, -0.5f), InputResult::kApplied);
   StepSeconds(world, 1.0f);
-  EXPECT_NEAR(world.Find(1)->y, 2400.0f - 150.0f, 0.01f);
+  EXPECT_NEAR(world.Find(1)->y, 2400.0f - 180.0f, 0.01f);
 }
 
 // 속도 조작 방지: 길이가 1을 넘는 방향은 1로 줄어야 한다.
@@ -88,7 +88,7 @@ TEST(WorldTest, OversizedDirectionIsNormalizedSoItCannotSpeedHack) {
   StepSeconds(world, 1.0f);
   const float dx = world.Find(1)->x - 2400.0f;
   const float dy = world.Find(1)->y - 2400.0f;
-  EXPECT_NEAR(std::sqrt(dx * dx + dy * dy), 300.0f, 0.05f);
+  EXPECT_NEAR(std::sqrt(dx * dx + dy * dy), 360.0f, 0.05f);
   EXPECT_NEAR(dx, dy, 0.001f);  // 대각선 방향이 유지된다
   EXPECT_LE(std::sqrt(world.Find(1)->dir_x * world.Find(1)->dir_x + world.Find(1)->dir_y * world.Find(1)->dir_y),
             1.0001f);
@@ -98,7 +98,7 @@ TEST(WorldTest, HugeButFiniteDirectionIsStillLimited) {
   World world = WorldWithOne();
   ASSERT_EQ(world.SetInput(1, 1, 1e30f, 0.0f), InputResult::kApplied);
   StepSeconds(world, 1.0f);
-  EXPECT_NEAR(world.Find(1)->x, 2700.0f, 0.05f);
+  EXPECT_NEAR(world.Find(1)->x, 2760.0f, 0.05f);
 }
 
 // 길이 제곱이 float 범위를 넘치는 값(회귀 시험): 1e30 이상에서 제곱이 무한대가 되어 방향이 0이나 NaN이 되던 버그.
@@ -135,7 +135,7 @@ TEST(WorldTest, LastInputStaysInEffectUntilTheNextOne) {
   ASSERT_EQ(world.SetInput(1, 1, 0.0f, 1.0f), InputResult::kApplied);
   StepSeconds(world, 0.5f);
   StepSeconds(world, 0.5f);  // 입력을 다시 보내지 않아도 계속 움직인다
-  EXPECT_NEAR(world.Find(1)->y, 2700.0f, 0.01f);
+  EXPECT_NEAR(world.Find(1)->y, 2760.0f, 0.01f);
 }
 
 // 맵 경계: 몸 반지름(40 cm)만큼 안쪽까지만 갈 수 있다.
@@ -183,7 +183,7 @@ TEST(WorldTest, NonFiniteInputIsIgnoredAndKeepsThePreviousDirection) {
   EXPECT_EQ(world.SetInput(1, 5, 0.0f, -inf), InputResult::kInvalid);
   StepSeconds(world, 1.0f);
   EXPECT_TRUE(std::isfinite(world.Find(1)->x));
-  EXPECT_NEAR(world.Find(1)->x, 2700.0f, 0.01f);
+  EXPECT_NEAR(world.Find(1)->x, 2760.0f, 0.01f);
   EXPECT_EQ(world.Find(1)->last_input_seq, 1u);  // 버린 입력의 번호는 기록하지 않는다
 }
 
@@ -241,7 +241,7 @@ TEST(WorldTest, SamePlayersAreIndependent) {
   world.AddPlayer(2, 1);
   ASSERT_EQ(world.SetInput(1, 1, 1.0f, 0.0f), InputResult::kApplied);
   StepSeconds(world, 1.0f);
-  EXPECT_NEAR(world.Find(1)->x, 2700.0f, 0.01f);
+  EXPECT_NEAR(world.Find(1)->x, 2760.0f, 0.01f);
   EXPECT_FLOAT_EQ(world.Find(2)->x, 2600.0f);  // 입력이 없는 사람은 제자리
 }
 

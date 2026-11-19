@@ -102,7 +102,7 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 자원 채집(107, 108, 112, `RoomState.nodes`, 결과 코드 9~12)의 규칙은 [stage4-gather.md](stage4-gather.md)가 기준이고, Unreal 쪽 구현은 아래 "자원 채집 (Unreal)" 절이다. 집 짓기(113~115, `RoomState.structures`, 결과 코드 13~17)와 이동 충돌은 [content-roadmap.md](content-roadmap.md)가 기준이고 Unreal 쪽은 "집 짓기 (Unreal)" 절이다.
 
 - 방 코드는 숫자 6자리 **문자열**이다(`"000042"`처럼 앞자리가 0일 수 있다). 정수로 바꾸지 않는다.
-- 위치 단위는 센티미터(Unreal과 같음), 맵은 5,000 x 5,000 cm이고 원점은 한쪽 모서리다. 이동 속도 300 cm/s, 최대 4명, 틱 20 Hz는 **임의로 정한 기본값**이다(`PlayConfig`).
+- 위치 단위는 센티미터(Unreal과 같음), 맵은 5,000 x 5,000 cm이고 원점은 한쪽 모서리다. 이동 속도 360 cm/s(처음에는 300), 최대 4명, 틱 20 Hz는 **임의로 정한 기본값**이다(`PlayConfig`).
 - 클라이언트는 이동 **방향**(길이 1 이하)과 증가하는 `sequence`만 보낸다. 위치는 서버가 계산한 스냅샷을 그린다. 정지는 방향 (0, 0)을 보낸다. 서버는 다음 입력이 올 때까지 마지막 방향으로 계속 움직인다.
 - `last_input_seq`는 서버가 마지막으로 반영한 이 플레이어의 입력 번호다. 나중에 클라이언트 예측과 보정에 쓸 수 있다.
 - 규칙 위반(잘못된 코드, 가득 참 등)은 응답의 `result`로 알리고 연결은 유지한다.

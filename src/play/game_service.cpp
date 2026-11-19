@@ -402,6 +402,7 @@ void GameService::HandleBuild(const std::shared_ptr<GameClient>& client, const p
     case BuildStatus::kInvalidType: response.set_result(protocol::GAME_BUILD_INVALID_TYPE); break;
     case BuildStatus::kLimit: response.set_result(protocol::GAME_STRUCTURE_LIMIT); break;
     case BuildStatus::kTooFar: response.set_result(protocol::GAME_BUILD_TOO_FAR); break;
+    case BuildStatus::kOutOfZone: response.set_result(protocol::GAME_BUILD_OUT_OF_ZONE); break;
     case BuildStatus::kBlocked: response.set_result(protocol::GAME_BUILD_BLOCKED); break;
     case BuildStatus::kNotEnoughResources: response.set_result(protocol::GAME_NOT_ENOUGH_RESOURCES); break;
   }
@@ -437,7 +438,7 @@ void GameService::Tick(std::uint32_t steps) {
       room.world().Step(dt);
     }
     // 재생할 노드를 되살린다(따라잡기 틱이 합쳐져도 한 번에 현재 틱 기준으로 처리한다).
-    stats_.nodes_respawned += room.resources().Advance(room.world().tick());
+    stats_.nodes_respawned += room.AdvanceResources(room.world().tick());
     stats_.structures_completed += room.structures().Advance(room.world().tick());
     Outgoing out;
     out.targets = RecipientsOf(room, 0);
@@ -448,6 +449,8 @@ void GameService::Tick(std::uint32_t steps) {
       protocol::ResourceNodeState* node = out.resource_update.add_nodes();
       node->set_node_id(change.node_id);
       node->set_hp(change.hp);
+      node->set_x(change.x);
+      node->set_y(change.y);
     }
     out.resource_update.set_tick(room.world().tick());
     for (const Structure& changed : room.structures().TakeChanges()) {

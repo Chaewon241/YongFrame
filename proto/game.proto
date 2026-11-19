@@ -25,6 +25,7 @@ enum GameResult {
   GAME_NOT_ENOUGH_RESOURCES = 15;   // 비용(목재, 석재)이 모자람
   GAME_BUILD_TOO_FAR = 16;          // 서버가 아는 내 위치에서 건설 허용 거리 밖
   GAME_STRUCTURE_LIMIT = 17;        // 방의 구조물 수 상한
+  GAME_BUILD_OUT_OF_ZONE = 18;      // 건물이 건설 구역(맵 중앙 정사각형) 밖으로 나감
 }
 
 enum StructureType {
@@ -58,7 +59,7 @@ enum ResourceKind {
   RESOURCE_ROCK = 1;  // 채집하면 석재
 }
 
-// 맵에 고정된 자원 노드 하나. 위치와 종류는 방이 닫힐 때까지 바뀌지 않고, 체력만 바뀐다.
+// 맵에 있는 자원 노드 하나. 종류는 방이 닫힐 때까지 같고, 체력이 바뀐다. 위치는 처음 배치 뒤에는 재생할 때만 바뀐다.
 message ResourceNode {
   uint32 node_id = 1;  // 방 안에서 1부터 부여, 방이 닫힐 때까지 같다
   ResourceKind kind = 2;
@@ -136,6 +137,8 @@ message GatherResponse {
 message ResourceNodeState {
   uint32 node_id = 1;
   uint32 hp = 2;  // 0이면 고갈
+  float x = 3;    // 재생으로 자리가 바뀌었을 수 있으므로 위치도 함께 보낸다(cm)
+  float y = 4;
 }
 
 // 한 틱 동안 체력이 바뀐 노드만 모아 방 전원에게 보낸다(채집한 본인 포함). 바뀐 것이 없으면 보내지 않는다.

@@ -512,11 +512,11 @@ TEST_F(GameServiceTest, MoveInputMovesThePlayerAtTheServerSpeedAndEveryoneSeesIt
   Join(bob, code, "bob");
 
   Move(alice, 1, 1.0f, 0.0f);
-  for (int i = 0; i < 20; ++i) service_.Tick();  // 20틱 = 1초 = 300 cm
+  for (int i = 0; i < 20; ++i) service_.Tick();  // 20틱 = 1초 = 360 cm
 
   const auto from_bob = bob->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
   EXPECT_EQ(from_bob.tick(), 20u);
-  EXPECT_NEAR(from_bob.players(0).x(), 2700.0f, 0.01f);
+  EXPECT_NEAR(from_bob.players(0).x(), 2760.0f, 0.01f);
   EXPECT_FLOAT_EQ(from_bob.players(0).y(), 2400.0f);
   EXPECT_FLOAT_EQ(from_bob.players(1).x(), 2600.0f);  // 입력이 없는 bob은 제자리
   EXPECT_EQ(from_bob.players(0).last_input_seq(), 1u);
@@ -531,7 +531,7 @@ TEST_F(GameServiceTest, OversizedInputCannotMoveFasterThanTheServerSpeed) {
   Move(clients_[1], 1, 100.0f, 0.0f);
   for (int i = 0; i < 20; ++i) service_.Tick();
   const auto snapshot = clients_[1]->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
-  EXPECT_NEAR(snapshot.players(0).x(), 2700.0f, 0.01f);
+  EXPECT_NEAR(snapshot.players(0).x(), 2760.0f, 0.01f);
 }
 
 TEST_F(GameServiceTest, SnapshotsStayInsideTheirOwnRoom) {
@@ -592,7 +592,7 @@ TEST_F(GameServiceTest, InvalidAndStaleInputsAreIgnoredAndCounted) {
 
   for (int i = 0; i < 20; ++i) service_.Tick();
   const auto snapshot = alice->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
-  EXPECT_NEAR(snapshot.players(0).x(), 2700.0f, 0.01f);  // 첫 입력만 반영되었다
+  EXPECT_NEAR(snapshot.players(0).x(), 2760.0f, 0.01f);  // 첫 입력만 반영되었다
   EXPECT_FLOAT_EQ(snapshot.players(0).y(), 2400.0f);
 }
 
@@ -604,7 +604,7 @@ TEST_F(GameServiceTest, TickWithSeveralStepsAdvancesTheWorldButSendsOneSnapshot)
   EXPECT_EQ(alice->CountOf(MessageId::kWorldSnapshot), 1u);
   const auto snapshot = alice->Nth<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
   EXPECT_EQ(snapshot.tick(), 3u);
-  EXPECT_NEAR(snapshot.players(0).x(), 2400.0f + 45.0f, 0.01f);  // 3틱 x 15 cm
+  EXPECT_NEAR(snapshot.players(0).x(), 2400.0f + 54.0f, 0.01f);  // 3틱 x 18 cm
   EXPECT_EQ(service_.stats().ticks.load(), 3u);
 }
 
@@ -617,7 +617,7 @@ TEST_F(GameServiceTest, LateJoinersStartAtTheirSlotNotWhereTheOthersWalked) {
   service_.Tick();
   const auto snapshot = bob->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
   ASSERT_EQ(snapshot.players_size(), 2);
-  EXPECT_NEAR(snapshot.players(0).x(), 3015.0f, 0.01f);  // 계속 걸어간 alice (41틱 x 15 cm)
+  EXPECT_NEAR(snapshot.players(0).x(), 3138.0f, 0.01f);  // 계속 걸어간 alice (41틱 x 18 cm)
   EXPECT_FLOAT_EQ(snapshot.players(1).x(), 2600.0f);     // 칸 1의 시작 위치
   EXPECT_EQ(snapshot.tick(), 41u);
 }
@@ -1144,6 +1144,44 @@ TEST_F(BuildServiceTest, TwoBuildersOnTheSameSpotInTheSameTickExactlyOneSucceeds
   EXPECT_EQ(first.result(), protocol::GAME_OK);
   EXPECT_EQ(second.result(), protocol::GAME_BUILD_BLOCKED);
   EXPECT_EQ(second.wood(), 20u) << "진 사람은 비용을 내지 않는다";
+}
+
+// 건설 허용 거리를 맵 전체로 넓혀 구역 경계를 시험하는 설정(구역은 기본값: 맵 중앙 [1300, 3700])
+class BuildZoneServiceTest : public GameServiceTest {
+ protected:
+  BuildZoneServiceTest() : GameServiceTest(MakeConfig()) {}
+  static PlayConfig MakeConfig() {
+    PlayConfig config;
+    config.gather_range_cm = 100000.0f;
+    config.gather_cooldown_ticks = 0;
+    config.tree_hp = 1000;
+    config.rock_hp = 1000;
+    config.build_range_cm = 100000.0f;
+    return config;
+  }
+};
+
+TEST_F(BuildZoneServiceTest, OutsideTheBuildZoneHasItsOwnCodeAndKeepsTheInventory) {
+  CreateRoomWith(1, "alice");
+  auto alice = clients_[1];
+  for (int i = 0; i < 20; ++i) ASSERT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_OK);
+  for (int i = 0; i < 10; ++i) ASSERT_EQ(DoGather(service_, alice, 31).result(), protocol::GAME_OK);
+
+  const auto outside = DoBuild(service_, alice, 1000.0f, 2500.0f);  // 발자국 850~1150: 구역(1300~) 밖
+  EXPECT_EQ(outside.result(), protocol::GAME_BUILD_OUT_OF_ZONE);
+  EXPECT_EQ(outside.wood(), 20u) << "거부 응답도 현재 인벤토리를 담는다";
+  EXPECT_EQ(DoBuild(service_, alice, 1500.0f, 2500.0f).result(), protocol::GAME_OK) << "발자국 1350~1650은 구역 안";
+  EXPECT_EQ(service_.stats().builds_rejected.load(), 1u);
+}
+
+TEST_F(BuildZoneServiceTest, EveryNodeInTheRoomStateLiesOutsideTheZone) {
+  auto alice = NewClient(1);
+  const auto state = Create(alice, "alice").state();
+  ASSERT_GT(state.nodes_size(), 0);
+  for (const auto& node : state.nodes()) {
+    const bool inside = std::abs(node.x() - 2500.0f) < 1260.0f && std::abs(node.y() - 2500.0f) < 1260.0f;
+    EXPECT_FALSE(inside) << node.node_id() << " (" << node.x() << ", " << node.y() << ")";
+  }
 }
 
 TEST(GameServiceNoNodes, ARoomWithoutNodesWorks) {
