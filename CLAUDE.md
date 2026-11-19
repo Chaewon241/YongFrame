@@ -27,7 +27,9 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/stage4-gather.md](docs/stage4-gather.md) | 4단계 확장 1(자원 채집) 설계: 범위, 프로토콜(ID 107/108/112), 기본값, 완료 기준, 서버·Unreal 설계, MCP 작업 목록 (구현 전) |
 | [docs/content-roadmap.md](docs/content-roadmap.md) | 채집 이후 콘텐츠 로드맵(집 짓기 → 하루 → 농사 → 경제 → 저장)과 첫 조각(집 짓기, 이동 충돌 포함) 설계. 구현 전 계획 |
 | [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(5.4.4와 5.8.4에서 Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법, 겪은 문제, 확인 방법 |
-| [README.md](README.md) | 진입점. 위 문서 링크와 바로 시작할 작업 |
+| [docs/server-journey.md](docs/server-journey.md) | 서버 시행착오 기록(포트폴리오용): 측정 도구 포화, 결론 철회 두 번, 병목 분해, 입출력 스레드 분리, 버그와 시험의 허점 |
+| [docs/unreal-client-structure.md](docs/unreal-client-structure.md) | Unreal 클라이언트 계층 구조, C++와 MCP의 책임 분담과 작업 순서, 검증 방법 (포트폴리오용 정리) |
+| [README.md](README.md) | 진입점(포트폴리오용). 결과 한눈에 보기, 구조, 단계 요약, 문서 지도, 빠른 시작, 한계 |
 
 `project.md`는 CLAUDE.md와 역할이 다르다(사람이 읽는 로드맵이며 README가 링크한다). 이름을 바꾸거나 합치지 않는다. 계획·계약이 바뀌면 CLAUDE.md가 아니라 해당 문서를 고치고, 여기에는 요약만 둔다.
 

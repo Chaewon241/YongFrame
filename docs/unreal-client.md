@@ -312,7 +312,7 @@ UE 5.8에는 Epic의 실험 기능 플러그인 `ModelContextProtocol`("Unreal M
 | Claude Code 연결 | 프로젝트 폴더의 `.mcp.json`(`mcpServers.unreal-mcp`, `type: http`)을 Claude Code가 읽는다. 또는 `claude mcp add --transport http unreal-mcp http://127.0.0.1:8000/mcp` |
 | 설정 파일 생성 | 에디터 콘솔 명령 `ModelContextProtocol.GenerateClientConfig ClaudeCode`가 `.mcp.json`을 만든다(직접 쓴 것과 같은 형식) |
 
-기본 도구는 `list_toolsets`, `describe_toolset`, `call_tool` 세 개이고 나머지는 툴셋 이름으로 호출한다(`bEnableToolSearch`). `list_toolsets`로 확인한 툴셋은 에디터 상태(콘솔 변수, 선택, 카메라, 플레이 세션, 로그), 액터, 에셋, 블루프린트, 레벨, 데이터 테이블, 머티리얼, 메시, 텍스처, 오브젝트 프로퍼티, 그리고 호출을 묶는 샌드박스 파이썬 도구다. **쓰기 도구는 호출해 보지 않았다.**
+기본 도구는 `list_toolsets`, `describe_toolset`, `call_tool` 세 개이고 나머지는 툴셋 이름으로 호출한다(`bEnableToolSearch`). `list_toolsets`로 확인한 툴셋은 에디터 상태(콘솔 변수, 선택, 카메라, 플레이 세션, 로그), 액터, 에셋, 블루프린트, 레벨, 데이터 테이블, 머티리얼, 메시, 텍스처, 오브젝트 프로퍼티, 그리고 호출을 묶는 샌드박스 파이썬 도구다. 이 절을 처음 쓸 때는 쓰기 도구를 호출해 보지 않았고, 이후 메뉴/채집/집 짓기 에셋 작업(블루프린트, 머티리얼, 위젯, 레벨)을 MCP 세션으로 했다(정리는 [unreal-client-structure.md](unreal-client-structure.md)).
 
 - **인증이 없다.** 플러그인은 DNS 리바인딩을 막는 Origin 검사만 한다. 로컬 주소로만 열어 두는 것이 유일한 방어이므로, 이 PC의 다른 프로그램은 이 포트로 에디터를 조작할 수 있다. 쓰지 않을 때는 에디터를 닫는다.
 - Epic의 실험 기능이라 도구 범위와 안정성은 써 보며 확인해야 한다.
