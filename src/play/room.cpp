@@ -8,7 +8,23 @@ namespace game::play {
 
 Room::Room(std::string code, const PlayConfig& config)
     : code_(std::move(code)), config_(config), world_(config), resources_(config), structures_(config) {
-  world_.AttachObstacles(&resources_, &structures_);
+  if (!config_.bench_no_collision) {
+    world_.AttachObstacles(&resources_, &structures_);
+  }
+
+  // 부하 측정 전용: 완공된 집을 미리 놓는다(건설 구역 안, 서로 겹치지 않는 격자, 시작 위치를 피함).
+  // 줄 y = 1450, 1850, 3150, 3550 (시작 위치와 사람이 돌아다니는 중앙 줄을 비운다), 칸 x = 1450 + 400 * i (i < 5).
+  if (config_.bench_prebuilt_structures > 0) {
+    const float rows[] = {1450.0f, 1850.0f, 3150.0f, 3550.0f};
+    std::uint32_t placed = 0;
+    for (const float y : rows) {
+      for (int i = 0; i < 5 && placed < config_.bench_prebuilt_structures && placed < 20; ++i, ++placed) {
+        structures_.Add(StructureType::kHouse, 1450.0f + 400.0f * static_cast<float>(i), y, 0);
+      }
+    }
+    structures_.Advance(config_.build_ticks);  // 모두 완공 상태로
+    structures_.TakeChanges();                 // 입장 알림에는 방 상태로 실리므로 틱 알림은 필요 없다
+  }
 }
 
 bool Room::HasNickname(std::string_view nickname) const {

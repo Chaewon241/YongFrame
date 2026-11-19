@@ -41,6 +41,13 @@ void PrintUsage(const char* program) {
             << "  --stats-interval <초>       통계 출력 주기 (기본 10, 0이면 끔)\n"
             << "  --max-send-queue-bytes <N>  연결당 송신 큐 한도 바이트 (기본 4194304)\n"
             << "  --tcp-nodelay <on|off>      TCP_NODELAY (기본 on: 작은 패킷도 바로 보냄)\n"
+            << "  --io-threads <N>            소켓 입출력 전용 스레드 수 (기본 0: 게임 로직 스레드가 입출력도 함께 함.\n"
+            << "                              N이면 게임 로직은 스레드 1개 그대로, 소켓 읽기/쓰기만 N개 스레드가 나눠 맡음)\n"
+            << "  --bench-move-speed <cm/s>   부하 측정 전용: 이동 속도를 바꿈 (기본 360)\n"
+            << "  --bench-no-collision <on|off>\n"
+            << "                              부하 측정 전용: on이면 구조물/노드가 이동을 막지 않음 (기본 off)\n"
+            << "  --bench-prebuilt-structures <N>\n"
+            << "                              부하 측정 전용: 방마다 완공된 집을 N개(최대 20) 미리 놓음 (기본 0)\n"
             << "  --storage <memory|mysql>    채팅 기록 저장소 (기본 memory: 서버를 끄면 사라짐)\n"
             << "  --db-host <주소>            MySQL 주소 (기본 127.0.0.1)\n"
             << "  --db-port <번호>            MySQL 포트 (기본 3306)\n"
@@ -122,6 +129,33 @@ ParseResult ParseArgs(int argc, char** argv, game::server::ServerConfig& config,
         return ParseResult::kExitError;
       }
       config.session.max_pending_send_bytes = static_cast<std::size_t>(number);
+    } else if (arg == "--bench-move-speed") {
+      if (!ParseUnsigned(value, 100000, number) || number == 0) {
+        std::cerr << "--bench-move-speed는 1~100000 사이 숫자(cm/s)여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+      config.play.move_speed_cm_per_s = static_cast<float>(number);
+    } else if (arg == "--bench-no-collision") {
+      if (value == "on") {
+        config.play.bench_no_collision = true;
+      } else if (value == "off") {
+        config.play.bench_no_collision = false;
+      } else {
+        std::cerr << "--bench-no-collision은 on 또는 off여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+    } else if (arg == "--bench-prebuilt-structures") {
+      if (!ParseUnsigned(value, 20, number)) {
+        std::cerr << "--bench-prebuilt-structures는 0~20 사이 숫자여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+      config.play.bench_prebuilt_structures = static_cast<std::uint32_t>(number);
+    } else if (arg == "--io-threads") {
+      if (!ParseUnsigned(value, 64, number)) {
+        std::cerr << "--io-threads는 0~64 사이 숫자여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+      config.io_threads = static_cast<std::uint32_t>(number);
     } else if (arg == "--tcp-nodelay") {
       if (value == "on") {
         config.session.tcp_nodelay = true;

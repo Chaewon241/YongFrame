@@ -401,5 +401,40 @@ TEST(RoomBuildZoneTest, ThePlayersStartInsideTheZoneAndBuildingInsideIsUnaffecte
   EXPECT_EQ(room.Build(1, 0, 2600.0f, 2400.0f).status, BuildStatus::kOk);
 }
 
+// ============================================================ 부하 측정용 미리 지은 집
+
+TEST(RoomBenchTest, PrebuiltStructuresAreCompleteInsideTheZoneDoNotOverlapAndLeaveTheSpawnFree) {
+  PlayConfig config;
+  config.bench_prebuilt_structures = 20;
+  Room room("111111", config);
+  ASSERT_EQ(room.structures().size(), 20u);
+  EXPECT_FALSE(room.structures().HasChanges()) << "미리 지은 집은 틱 알림을 만들지 않는다(방 상태로 전달된다)";
+  for (std::size_t i = 0; i < room.structures().size(); ++i) {
+    const Structure& a = room.structures().structures()[i];
+    EXPECT_EQ(a.state, StructureState::kComplete);
+    EXPECT_GE(a.x - a.width * 0.5f, 2500.0f - config.build_zone_half_size_cm) << a.id;
+    EXPECT_LE(a.x + a.width * 0.5f, 2500.0f + config.build_zone_half_size_cm) << a.id;
+    EXPECT_GE(a.y - a.height * 0.5f, 2500.0f - config.build_zone_half_size_cm) << a.id;
+    EXPECT_LE(a.y + a.height * 0.5f, 2500.0f + config.build_zone_half_size_cm) << a.id;
+    for (std::size_t j = i + 1; j < room.structures().size(); ++j) {
+      EXPECT_FALSE(RectsOverlap(a.Footprint(), room.structures().structures()[j].Footprint())) << a.id << " " << j + 1;
+    }
+  }
+  for (std::uint64_t id = 1; id <= 4; ++id) {
+    const std::uint32_t player = room.AddMember(id, "p" + std::to_string(id));
+    const PlayerBody* body = room.world().Find(player);
+    EXPECT_TRUE(room.world().IsFree(body->x, body->y)) << "시작 위치가 집에 막히지 않는다";
+    EXPECT_NEAR(body->x, 2500.0f, 150.0f);
+    EXPECT_NEAR(body->y, 2500.0f, 150.0f);
+  }
+}
+
+TEST(RoomBenchTest, TheDefaultHasNoPrebuiltStructuresAndTheCountIsCapped) {
+  EXPECT_EQ(Room("111111", PlayConfig{}).structures().size(), 0u);
+  PlayConfig many;
+  many.bench_prebuilt_structures = 99;
+  EXPECT_EQ(Room("222222", many).structures().size(), 20u);
+}
+
 }  // namespace
 }  // namespace game::play

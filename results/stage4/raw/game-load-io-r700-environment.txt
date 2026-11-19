@@ -1,0 +1,5 @@
+﻿Tag: io-r700, rooms: 700, reps: 3, conditions: IO2,IO4, idle limit: 10
+PRE server: C:\dev\yong_pre\build\windows-local\Release\game_server.exe (session/server from commit 03722ec, same game code)
+NEW server: C:\Users\limch\OneDrive\문서\GitHub\YongFrame\build\windows-local\Release\game_server.exe  commit: 03722ec + uncommitted changes
+Logical processors: 12
+Top CPU-time background processes at start: chrome, EOSOverlayRenderer-Win64-Shipping, chrome, EpicGamesLauncher, Discord, chrome, claude, ChatGPT

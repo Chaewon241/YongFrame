@@ -75,7 +75,9 @@ std::string GameStats::Summary() const {
       << " 채집=" << gathers_ok.load() << " 채집거부=" << gathers_rejected.load()
       << " 고갈=" << nodes_depleted.load() << " 재생=" << nodes_respawned.load()
       << " 건설=" << builds_ok.load() << " 건설거부=" << builds_rejected.load()
-      << " 완공=" << structures_completed.load();
+      << " 완공=" << structures_completed.load()
+      << " 틱시간{이동=" << tick_us_step.load() << " 갱신=" << tick_us_update.load() << " 구성=" << tick_us_build.load()
+      << " 전송=" << tick_us_deliver.load() << " 합=" << tick_us_total.load() << "}";
   return out.str();
 }
 
@@ -432,17 +434,27 @@ void GameService::Tick(std::uint32_t steps) {
   };
   std::vector<Outgoing> outgoing;
   outgoing.reserve(rooms_.size());
+  using Clock = std::chrono::steady_clock;
+  std::chrono::nanoseconds step_ns{0};
+  std::chrono::nanoseconds update_ns{0};
+  std::chrono::nanoseconds build_ns{0};
   for (auto& entry : rooms_) {
     Room& room = *entry.second;
+    const auto t0 = Clock::now();
     for (std::uint32_t i = 0; i < steps; ++i) {
       room.world().Step(dt);
     }
+    const auto t1 = Clock::now();
     // 재생할 노드를 되살린다(따라잡기 틱이 합쳐져도 한 번에 현재 틱 기준으로 처리한다).
     stats_.nodes_respawned += room.AdvanceResources(room.world().tick());
     stats_.structures_completed += room.structures().Advance(room.world().tick());
+    const auto t2 = Clock::now();
+    step_ns += t1 - t0;
+    update_ns += t2 - t1;
     Outgoing out;
     out.targets = RecipientsOf(room, 0);
     if (out.targets.empty()) {
+      build_ns += Clock::now() - t2;
       continue;
     }
     for (const auto& change : room.resources().TakeChanges()) {
@@ -466,8 +478,10 @@ void GameService::Tick(std::uint32_t steps) {
       state->set_last_input_seq(body.last_input_seq);
     }
     outgoing.push_back(std::move(out));
+    build_ns += Clock::now() - t2;
   }
   stats_.ticks += steps;
+  const auto deliver_start = Clock::now();
 
   // 2) 전송: 여기서부터는 방 컨테이너를 순회하지 않는다. 느린 수신자 때문에 연결이 닫혀 OnDisconnect가
   //    불려도(방이 지워질 수 있음) 위 단계에서 확보한 강한 참조만 쓰므로 안전하다.
@@ -486,8 +500,14 @@ void GameService::Tick(std::uint32_t steps) {
     }
   }
 
-  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started);
+  const auto finished = Clock::now();
+  const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(finished - started);
   AtomicMax(stats_.max_tick_micros, static_cast<std::uint64_t>(elapsed.count()));
+  stats_.tick_us_step += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(step_ns).count());
+  stats_.tick_us_update += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(update_ns).count());
+  stats_.tick_us_build += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(build_ns).count());
+  stats_.tick_us_deliver += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(finished - deliver_start).count());
+  stats_.tick_us_total += static_cast<std::uint64_t>(elapsed.count());
 }
 
 void GameService::StartTicking() {

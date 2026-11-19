@@ -63,6 +63,12 @@ struct GameStats {
   Counter builds_rejected{0};        // 거부한 건설 수 (방에 없음, 종류, 상한, 너무 멂, 겹침, 자원 부족)
   Counter structures_completed{0};   // 건설이 끝난 구조물 수
   Counter structure_updates_sent{0}; // 보낸 StructureUpdate 수 (수신자 수만큼 센다)
+  // 틱 시간의 단계별 누적(마이크로초). 병목을 가르려고 계측한다. 합 = 계산 + 갱신 + 구성 + 전송 + 기타(루프 오버헤드).
+  Counter tick_us_step{0};     // 월드 이동 계산(World::Step)
+  Counter tick_us_update{0};   // 재생/완공 갱신(노드 재생, 구조물 완공)
+  Counter tick_us_build{0};    // 수신자 목록과 스냅샷/갱신 메시지 구성
+  Counter tick_us_deliver{0};  // 전송(Deliver: 직렬화, 프레임, 송신 큐, 송신 시작)
+  Counter tick_us_total{0};    // 한 틱 전체
 
   std::string Summary() const;
 };

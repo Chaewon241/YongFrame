@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -412,6 +413,172 @@ TEST(ServerIntegration, StoppedServerRefusesNewConnections) {
 
   BlockingClient client;
   EXPECT_FALSE(client.Connect("127.0.0.1", port, Millis(1000)));
+}
+
+// ============================================================ 입출력 스레드 (io_threads > 0)
+//
+// 소켓 읽기/쓰기를 논리 스레드 밖의 여러 스레드가 맡을 때만 생길 수 있는 문제를 겨냥한다: 한 연결 안의 응답
+// 순서, 부분 쓰기, 전송 중 닫힘, 송신 큐 초과, 다른 연결과 서로 영향을 주지 않기, 트래픽 중 서버 종료.
+// 환경변수와 상관없이 항상 입출력 스레드 4개로 돌린다. (나머지 테스트는 *_io4 ctest 항목이 같은 서버 설정으로 반복한다)
+
+server::ServerConfig IoThreadConfig() {
+  server::ServerConfig config = DefaultServerConfig();
+  config.io_threads = 4;
+  return config;
+}
+
+TEST(ServerIntegrationIoThreads, ResponsesKeepRequestOrderOnEveryConnectionUnderConcurrency) {
+  constexpr int kConnections = 24;
+  constexpr int kRequests = 150;
+  TestServer server(IoThreadConfig());
+
+  std::atomic<int> failures{0};
+  std::vector<std::thread> threads;
+  for (int c = 0; c < kConnections; ++c) {
+    threads.emplace_back([&, c] {
+      BlockingClient client;
+      if (!client.Connect("127.0.0.1", server.port())) {
+        ++failures;
+        return;
+      }
+      // 한 번에 몰아서 보내 파이프라인으로 처리하게 한다. 페이로드 크기를 섞어(큰 것은 부분 쓰기를 일으킨다)
+      // 쓰기 도중에 다음 응답이 큐에 들어오는 경우를 만든다.
+      Bytes all;
+      std::vector<std::string> payloads;
+      for (int i = 0; i < kRequests; ++i) {
+        const std::size_t size = (i % 10 == 0) ? 50000 : static_cast<std::size_t>(1 + (i * 7 + c) % 200);
+        payloads.emplace_back(size, static_cast<char>('a' + (i + c) % 26));
+        const Bytes frame = PingFrameBytes(static_cast<std::uint64_t>(c) * 1000 + static_cast<std::uint64_t>(i), payloads.back());
+        all.insert(all.end(), frame.begin(), frame.end());
+      }
+      if (!client.SendRaw(all)) {
+        ++failures;
+        return;
+      }
+      for (int i = 0; i < kRequests; ++i) {
+        protocol::PingResponse response;
+        if (client.ReceivePingResponse(response, kTimeout) != Status::kFrame ||
+            response.request_id() != static_cast<std::uint64_t>(c) * 1000 + static_cast<std::uint64_t>(i) ||
+            response.payload() != payloads[static_cast<std::size_t>(i)]) {
+          ++failures;
+          return;
+        }
+      }
+    });
+  }
+  for (auto& t : threads) {
+    t.join();
+  }
+  EXPECT_EQ(failures.load(), 0);
+  EXPECT_EQ(Load(server.stats().frames_received), static_cast<std::uint64_t>(kConnections) * kRequests);
+  EXPECT_TRUE(WaitUntil([&] {
+    return Load(server.stats().frames_sent) == static_cast<std::uint64_t>(kConnections) * kRequests;
+  }));
+}
+
+TEST(ServerIntegrationIoThreads, ClientsThatDisconnectWhileServerIsSendingDoNotBreakTheServer) {
+  constexpr int kRounds = 30;
+  TestServer server(IoThreadConfig());
+
+  // 큰 응답이 쓰이는 도중에(또는 큐에 쌓인 채로) 상대가 연결을 끊는 상황을 반복한다.
+  const std::string payload(60000, 'D');
+  for (int round = 0; round < kRounds; ++round) {
+    std::vector<std::unique_ptr<BlockingClient>> clients;
+    for (int i = 0; i < 4; ++i) {
+      clients.push_back(Connect(server));
+      Bytes burst;
+      for (int k = 0; k < 20; ++k) {
+        const Bytes frame = PingFrameBytes(static_cast<std::uint64_t>(k), payload);
+        burst.insert(burst.end(), frame.begin(), frame.end());
+      }
+      clients.back()->SendRaw(burst);
+    }
+    clients.clear();  // 응답을 읽지 않고 바로 닫는다.
+  }
+
+  EXPECT_TRUE(WaitUntil([&] { return Load(server.stats().current_connections) == 0; }));
+  EXPECT_EQ(Load(server.stats().internal_errors), 0u);
+  EXPECT_TRUE(ServerStillWorks(server));
+}
+
+TEST(ServerIntegrationIoThreads, SlowClientOverflowDoesNotDisturbAHealthyClient) {
+  server::ServerConfig config = IoThreadConfig();
+  config.session.max_pending_send_bytes = 200000;
+  TestServer server(config);
+
+  auto slow = Connect(server);
+  auto healthy = Connect(server);
+
+  std::atomic<bool> stop{false};
+  std::atomic<int> healthy_failures{0};
+  std::atomic<int> healthy_done{0};
+  std::thread healthy_thread([&] {
+    for (std::uint64_t id = 1; !stop.load(); ++id) {
+      if (!PingRoundTrip(*healthy, id, std::string(2000, 'h'))) {
+        ++healthy_failures;
+        return;
+      }
+      ++healthy_done;
+    }
+  });
+
+  const std::string payload(10000, 'S');
+  for (std::uint64_t id = 0; id < 6000; ++id) {
+    if (!slow->SendPing(id, payload)) {
+      break;
+    }
+  }
+  EXPECT_TRUE(WaitUntil([&] { return Load(server.stats().send_queue_overflows) == 1; }));
+  EXPECT_TRUE(slow->WaitForServerClose(kTimeout));
+  const int done_at_overflow = healthy_done.load();
+  EXPECT_TRUE(WaitUntil([&] { return healthy_done.load() >= done_at_overflow + 20; }));  // 끊긴 뒤에도 계속 정상
+  stop = true;
+  healthy_thread.join();
+
+  EXPECT_EQ(healthy_failures.load(), 0);
+  EXPECT_EQ(Load(server.stats().send_queue_overflows), 1u);  // 정상 연결은 한 번도 넘치지 않았다
+}
+
+TEST(ServerIntegrationIoThreads, StopWhileTrafficIsFlowingClosesEverythingAndEndsCleanly) {
+  constexpr int kConnections = 16;
+  TestServer server(IoThreadConfig());
+
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> threads;
+  std::atomic<int> closed_seen{0};
+  for (int c = 0; c < kConnections; ++c) {
+    threads.emplace_back([&, c] {
+      BlockingClient client;
+      if (!client.Connect("127.0.0.1", server.port())) {
+        return;
+      }
+      const std::string payload(3000, 't');
+      for (std::uint64_t id = 0; !stop.load(); ++id) {
+        if (!client.SendPing(id, payload)) {
+          break;  // 서버가 닫음
+        }
+        protocol::PingResponse response;
+        if (client.ReceivePingResponse(response, kTimeout) != Status::kFrame) {
+          break;
+        }
+      }
+      if (client.WaitForServerClose(kTimeout)) {
+        ++closed_seen;
+      }
+      (void)c;
+    });
+  }
+  ASSERT_TRUE(WaitUntil([&] { return Load(server.stats().current_connections) == kConnections; }));
+  std::this_thread::sleep_for(Millis(200));  // 트래픽이 한창일 때
+
+  server.Stop();
+  stop = true;
+  for (auto& t : threads) {
+    t.join();
+  }
+  EXPECT_EQ(closed_seen.load(), kConnections);
+  EXPECT_EQ(Load(server.stats().current_connections), 0u);
+  EXPECT_EQ(Load(server.stats().internal_errors), 0u);
 }
 
 }  // namespace

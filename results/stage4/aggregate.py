@@ -10,7 +10,7 @@ def to_s(t):
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
-stat_re = re.compile(r'^(\d\d:\d\d:\d\d\.\d\d\d) \[INFO \] \[통계\].*게임\{.*?틱=(\d+) 건너뜀=(\d+) 스냅샷=(\d+) 최대틱처리=(\d+)us\}')
+stat_re = re.compile(r'^(\d\d:\d\d:\d\d\.\d\d\d) \[INFO \] \[통계\].*게임\{.*?틱=(\d+) 건너뜀=(\d+) 스냅샷=(\d+) 최대틱처리=(\d+)us[^}]*\}')
 
 
 def server_ticks(label, start, end):

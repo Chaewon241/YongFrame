@@ -11,13 +11,16 @@
 //     같은 방을 쓰게 한다. (지금은 단일 방)
 //  6. 게임 서비스(GameService)를 소유한다. 여러 게임 방과 고정 간격 틱을 관리하며 모든 Session이 공유한다.
 //
-// 스레드 규칙: Session과 마찬가지로 모든 핸들러가 같은 스레드에서 실행된다는 전제로 동작한다.
-// Stop()은 io_context를 돌리는 스레드에서 불러야 한다.
+// 스레드 규칙: Server, ChatRoom, GameService는 "논리 스레드"(생성자에 넘긴 io_context를 돌리는 스레드 1개)에서만
+// 실행된다는 전제로 동작한다. 소켓 입출력만 config.io_threads가 0보다 클 때 서버가 따로 만든 입출력 스레드들이
+// 맡는다(Session 참고). Stop()은 논리 스레드에서 불러야 한다. 서버를 소멸시키면 입출력 스레드를 모두 정리한다.
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include <boost/asio.hpp>
 
@@ -37,6 +40,11 @@ struct ServerConfig {
   chat::ChatRoomOptions chat;
   play::PlayConfig play;
   std::uint32_t stats_interval_seconds = 10;  // 0이면 주기 통계 출력을 끈다.
+
+  // 소켓 읽기/쓰기를 맡을 입출력 스레드 수. 0이면 따로 두지 않고 Server에 넘긴 io_context(논리 스레드)가
+  // 입출력도 함께 한다(예전과 같은 단일 스레드 동작). N이면 N개 스레드가 연결별 strand로 소켓 입출력을 하고,
+  // 게임 로직과 채팅 방은 여전히 논리 스레드 하나에서만 돈다. (docs/stage4.md: 송신 스레드 분리 실험)
+  std::uint32_t io_threads = 0;
 };
 
 class Server {
@@ -48,6 +56,11 @@ class Server {
   //             (서버가 꺼지면 기록이 사라진다. 테스트에서는 장애를 주입할 수 있는 구현을 넘긴다)
   Server(boost::asio::io_context& io, ServerConfig config,
          std::shared_ptr<chat::ChatRepository> repository = nullptr);
+
+  // 입출력 스레드를 정리한다(열린 연결이 남아 있으면 강제로 멈춘다).
+  ~Server();
+  Server(const Server&) = delete;
+  Server& operator=(const Server&) = delete;
 
   // accept 반복과 주기 통계 출력을 시작한다. 이후 io_context::run()이 일을 처리한다.
   void Start();
@@ -71,6 +84,17 @@ class Server {
   void OnAccept(const boost::system::error_code& ec, boost::asio::ip::tcp::socket socket);
   void ScheduleAcceptRetry();
   void ScheduleStatsReport();
+
+  // 입출력 스레드 풀(io_threads가 0이면 만들지 않는다). 세션의 소켓이 이 io_context에 속하므로, 세션은
+  // 풀을 공유 소유한다(Session의 io_keepalive). 서버가 먼저 소멸하고 논리 io_context의 대기 핸들러가 나중에
+  // 세션을 해제하더라도, 그 세션의 소켓이 사라진 풀을 건드리지 않게 하기 위해서다.
+  std::shared_ptr<boost::asio::io_context> io_pool_;
+  using PoolGuard = boost::asio::executor_work_guard<boost::asio::io_context::executor_type>;
+  std::unique_ptr<PoolGuard> io_pool_guard_;
+  std::vector<std::thread> io_threads_;
+
+  boost::asio::io_context& logic_io_;   // 논리 스레드의 io_context
+  boost::asio::io_context& socket_io_;  // 새 연결의 소켓을 만들 io_context (io_threads가 0이면 logic_io_와 같다)
 
   const ServerConfig config_;
   boost::asio::ip::tcp::acceptor acceptor_;

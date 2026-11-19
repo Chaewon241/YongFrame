@@ -20,7 +20,13 @@ constexpr std::chrono::milliseconds kAcceptRetryDelay{100};
 
 Server::Server(boost::asio::io_context& io, ServerConfig config,
                std::shared_ptr<chat::ChatRepository> repository)
-    : config_(std::move(config)),
+    : io_pool_(config.io_threads > 0
+                   ? std::make_shared<boost::asio::io_context>(static_cast<int>(config.io_threads))
+                   : nullptr),
+      io_pool_guard_(io_pool_ ? std::make_unique<PoolGuard>(boost::asio::make_work_guard(*io_pool_)) : nullptr),
+      logic_io_(io),
+      socket_io_(io_pool_ ? *io_pool_ : io),
+      config_(std::move(config)),
       acceptor_(io),
       accept_retry_timer_(io),
       stats_timer_(io),
@@ -48,10 +54,33 @@ Server::Server(boost::asio::io_context& io, ServerConfig config,
   port_ = acceptor_.local_endpoint().port();
 }
 
+Server::~Server() {
+  if (!io_pool_) {
+    return;
+  }
+  // 입출력 스레드가 아직 돌고 있다면 일감이 끝나기를 기다리지 않고 멈춘다(정상 종료(Stop)를 거쳤다면 이미 모든
+  // 소켓 닫기가 넘어가 있다).
+  io_pool_guard_.reset();
+  io_pool_->stop();
+  for (auto& thread : io_threads_) {
+    if (thread.joinable()) {
+      thread.join();
+    }
+  }
+  // 풀의 대기열에 남은 핸들러는 세션을 붙잡고 있고 세션은 풀을 붙잡고 있어서(Session의 io_keepalive), 그대로 두면
+  // 서로 붙잡은 채 영원히 해제되지 않는다. 스레드가 모두 끝난 지금 남은 핸들러를 이 스레드에서 처리해 비운다.
+  // (이미 닫힌 연결에 대한 정리뿐이고, 논리 스레드로 넘기는 일은 대기열에 쌓일 뿐 실행되지 않는다)
+  io_pool_->restart();
+  io_pool_->poll();
+}
+
 void Server::Start() {
   Log(LogLevel::kInfo, "[서버] 시작 주소=", config_.bind_address, " 포트=", port_,
       " 송신큐한도=", config_.session.max_pending_send_bytes, "B",
-      " nodelay=", config_.session.tcp_nodelay ? "on" : "off");
+      " nodelay=", config_.session.tcp_nodelay ? "on" : "off", " 입출력스레드=", config_.io_threads);
+  for (std::uint32_t i = 0; i < config_.io_threads; ++i) {
+    io_threads_.emplace_back([pool = io_pool_] { pool->run(); });
+  }
   DoAccept();
   game_->StartTicking();
   if (config_.stats_interval_seconds > 0) {
@@ -63,8 +92,11 @@ void Server::Start() {
 // 핸들러는 (오류, 이미 연결된 소켓)을 받는다. OnAccept가 끝나면 다시 DoAccept를 불러
 // 계속 새 연결을 받는다.
 void Server::DoAccept() {
-  acceptor_.async_accept([this](const boost::system::error_code& ec, boost::asio::ip::tcp::socket socket) {
-    OnAccept(ec, std::move(socket));
+  // 새 소켓은 입출력 풀의 io_context 위에서 만든다(io_threads가 0이면 논리 io_context). 핸들러는 acceptor가
+  // 속한 논리 스레드에서 실행된다.
+  acceptor_.async_accept(socket_io_, [this](const boost::system::error_code& ec,
+                                            boost::asio::basic_stream_socket<boost::asio::ip::tcp, boost::asio::io_context::executor_type> socket) {
+    OnAccept(ec, boost::asio::ip::tcp::socket(std::move(socket)));
   });
 }
 
@@ -83,7 +115,7 @@ void Server::OnAccept(const boost::system::error_code& ec, boost::asio::ip::tcp:
 
   const std::uint64_t id = next_session_id_++;
   auto session = std::make_shared<Session>(
-      std::move(socket), id, stats_, config_.session, *room_, *game_,
+      std::move(socket), id, stats_, config_.session, *room_, *game_, logic_io_.get_executor(), io_pool_,
       // 세션이 닫히면 이 콜백이 불려 목록에서 지운다. 지워도 핸들러가 shared_ptr을 쥐고 있어
       // 진행 중인 핸들러가 끝날 때까지 세션 객체는 살아 있다.
       [this](std::uint64_t closed_id) { sessions_.erase(closed_id); });
@@ -147,6 +179,9 @@ void Server::Stop() {
   for (const auto& session : snapshot) {
     session->Close(CloseReason::kServerShutdown);
   }
+
+  // 소켓 닫기를 입출력 스레드에 모두 넘겼다. 풀이 일감을 다 처리하면 스레드가 끝나도록 대기 표시를 푼다.
+  io_pool_guard_.reset();
 }
 
 }  // namespace game::server

@@ -1,0 +1,8 @@
+﻿OS: Microsoft Windows 11 Home 10.0.26200
+CPU: AMD Ryzen 5 5600 6-Core Processor              
+RAM: 16 GB
+Build: Release (MSVC 14.44, VS 2022)
+Commit: 03722ec (uncommitted changed files: 7)
+Server: --log-level info --stats-interval 1, 1 io_context thread, TCP_NODELAY on, memory storage, PlayConfig defaults (speed 360, build zone 1200)
+Generator: game_load_client --threads 4, same PC loopback, 4 players per room, MoveInput 10 Hz per player, warmup 5 s, measure 30 s, drain 3 s
+Top CPU-time background processes at start: chrome, EpicGamesLauncher, EOSOverlayRenderer-Win64-Shipping, claude, claude, Discord, chrome, chrome

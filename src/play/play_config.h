@@ -55,6 +55,12 @@ struct PlayConfig {
   // 재생할 자리를 못 찾았을 때 다시 찾기까지 기다리는 틱 수(매 틱 찾지 않는다)
   std::uint32_t respawn_retry_ticks = 20;
 
+  // **부하 측정 전용(게임 규칙이 아니다).** 방을 만들 때 완공된 집을 이 개수만큼 건설 구역 안에 미리 놓는다(최대 20).
+  // 구조물이 방당 상한까지 찬 상태에서 이동 계산 비용을 재려고 만들었다. 기본은 0이다.
+  std::uint32_t bench_prebuilt_structures = 0;
+  // **부하 측정 전용.** true이면 구조물과 노드가 이동을 막지 않는다(월드에 장애물을 연결하지 않는다). 충돌 비용을 가르는 실험용이다.
+  bool bench_no_collision = false;
+
   float TickSeconds() const { return 1.0f / static_cast<float>(tick_rate_hz == 0 ? 1 : tick_rate_hz); }
 };
 

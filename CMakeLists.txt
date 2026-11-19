@@ -166,18 +166,24 @@ add_executable(server_integration_test tests/server_integration_test.cpp)
 target_link_libraries(server_integration_test PRIVATE server_core client_core GTest::gtest_main)
 apply_project_options(server_integration_test)
 gtest_discover_tests(server_integration_test)
+# 같은 시나리오를 입출력 스레드 4개를 둔 서버로도 돌린다(tests/test_support.h의 GAME_TEST_IO_THREADS).
+gtest_discover_tests(server_integration_test TEST_SUFFIX _io4 TEST_LIST server_integration_test_io4_tests PROPERTIES ENVIRONMENT GAME_TEST_IO_THREADS=4)
 
 # 채팅 통합 테스트: 입장/대화/기록/저장소 장애/느린 수신자를 실제 TCP로 검증한다.
 add_executable(chat_integration_test tests/chat_integration_test.cpp)
 target_link_libraries(chat_integration_test PRIVATE server_core client_core GTest::gtest_main)
 apply_project_options(chat_integration_test)
 gtest_discover_tests(chat_integration_test)
+# 같은 시나리오를 입출력 스레드 4개를 둔 서버로도 돌린다(tests/test_support.h의 GAME_TEST_IO_THREADS).
+gtest_discover_tests(chat_integration_test TEST_SUFFIX _io4 TEST_LIST chat_integration_test_io4_tests PROPERTIES ENVIRONMENT GAME_TEST_IO_THREADS=4)
 
 # 게임 통합 테스트(4단계): 방 만들기/입장/이동/스냅샷/연결 끊김/비정상 입력을 실제 TCP로 검증한다.
 add_executable(game_integration_test tests/game_integration_test.cpp)
 target_link_libraries(game_integration_test PRIVATE server_core client_core GTest::gtest_main)
 apply_project_options(game_integration_test)
 gtest_discover_tests(game_integration_test)
+# 같은 시나리오를 입출력 스레드 4개를 둔 서버로도 돌린다(tests/test_support.h의 GAME_TEST_IO_THREADS).
+gtest_discover_tests(game_integration_test TEST_SUFFIX _io4 TEST_LIST game_integration_test_io4_tests PROPERTIES ENVIRONMENT GAME_TEST_IO_THREADS=4)
 
 # 부하 생성기(3단계): 많은 연결로 Ping을 보내 지연, 처리량, 오류, 서버 CPU/메모리를 잰다.
 add_executable(load_client src/tools/load_client.cpp)
@@ -196,6 +202,10 @@ endif()
 apply_project_options(game_load_client)
 
 # MySQL 연결 확인 도구: 서버 설치와 계정 설정이 맞는지, 드라이버가 두 환경에서 빌드되는지 본다.
+add_executable(bench_deliver src/tools/bench_deliver.cpp)
+target_link_libraries(bench_deliver PRIVATE frame_codec game_proto Boost::headers Threads::Threads)
+apply_project_options(bench_deliver)
+
 add_executable(mysql_check src/tools/mysql_check.cpp)
 target_link_libraries(mysql_check PRIVATE Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
 if(WIN32)

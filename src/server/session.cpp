@@ -77,14 +77,20 @@ std::string DescribeError(const boost::system::error_code& ec) {
 
 Session::Session(boost::asio::ip::tcp::socket socket, std::uint64_t id, Stats& stats,
                  const SessionOptions& options, chat::ChatRoom& room, play::GameService& game,
+                 boost::asio::any_io_executor logic, std::shared_ptr<void> io_keepalive,
                  CloseCallback on_close)
-    : socket_(std::move(socket)),
+    : io_keepalive_(std::move(io_keepalive)),
       id_(id),
       stats_(stats),
       options_(options),
       room_(room),
       game_(game),
-      on_close_(std::move(on_close)) {}
+      logic_(std::move(logic)),
+      // 이 연결의 strand는 소켓이 속한 입출력 실행자 위에 만든다(멤버 선언 순서상 socket_보다 먼저 만들어지므로
+      // 아직 옮기지 않은 인자 socket에서 실행자를 얻는다).
+      strand_(boost::asio::make_strand(socket.get_executor())),
+      on_close_(std::move(on_close)),
+      socket_(std::move(socket)) {}
 
 // 연결이 시작될 때 한 번 호출된다. 상대 주소를 기록하고, 소켓 옵션을 설정하고, 통계를 올린 뒤
 // 첫 읽기를 시작한다.
@@ -105,52 +111,77 @@ void Session::Start() {
   Stats::UpdateMax(stats_.peak_connections, current);
   Log(LogLevel::kInfo, "[연결] id=", id_, " 원격=", remote_, " 현재연결=", current);
 
-  DoRead();
+  auto self = shared_from_this();
+  boost::asio::dispatch(strand_, [self] { self->DoRead(); });
 }
 
-// 소켓에서 데이터를 비동기로 읽도록 요청한다. 완료되면 OnRead가 호출된다.
+// 입출력 구역에서 연결을 닫아야 할 때(읽기/쓰기 오류, 송신 큐 초과) 논리 실행자에서 Close를 실행하게 넘긴다.
+void Session::RequestClose(CloseReason reason, std::string detail) {
+  auto self = shared_from_this();
+  boost::asio::dispatch(logic_, [self, reason, detail = std::move(detail)] { self->Close(reason, detail); });
+}
+
+// [strand] 소켓에서 데이터를 비동기로 읽도록 요청한다. 완료되면 OnRead가 호출된다.
 // 읽은 크기는 정해져 있지 않다(1바이트일 수도, 버퍼 크기만큼일 수도 있다). 그래서 read_some을 쓰고,
 // 프레임으로 자르는 일은 디코더가 한다.
 void Session::DoRead() {
+  if (io_closed_) {
+    return;
+  }
   // 핸들러가 이 Session을 붙잡고 있게 한다. 이게 없으면 읽기가 끝나기 전에 서버 목록에서
   // 세션이 지워질 때 객체가 사라져 핸들러가 해제된 메모리를 쓰게 된다.
   auto self = shared_from_this();
   socket_.async_read_some(boost::asio::buffer(read_buffer_),
-                          [this, self](const boost::system::error_code& ec, std::size_t bytes) {
-                            OnRead(ec, bytes);
-                          });
+                          boost::asio::bind_executor(strand_, [this, self](const boost::system::error_code& ec,
+                                                                           std::size_t bytes) { OnRead(ec, bytes); }));
 }
 
-// 읽기가 끝났을 때 호출된다.
-//  - 오류/상대 종료: 이유를 가려 Close
-//  - 정상: 읽은 바이트를 디코더에 넣고 완성된 프레임을 처리한 뒤, 다음 읽기를 요청
+// [strand] 읽기가 끝났을 때 호출된다. 소켓을 직접 만지는 일은 여기까지고, 나머지는 논리 구역에 넘긴다.
+//  - 오류/상대 종료: 논리 구역에서 이유를 가려 Close
+//  - 정상: 읽은 바이트를 논리 구역에서 처리. 다음 읽기는 논리 구역이 처리를 마친 뒤에 요청한다.
 void Session::OnRead(const boost::system::error_code& ec, std::size_t bytes_transferred) {
-  // 우리가 Close()를 부른 뒤에 취소된 읽기가 완료 통지로 오는 경우다. 이미 정리됐으니 무시한다.
+  // 우리가 소켓을 닫은 뒤에 취소된 읽기가 완료 통지로 오는 경우다. 이미 정리됐으니 무시한다.
+  if (io_closed_) {
+    return;
+  }
+  auto self = shared_from_this();
+  if (ec) {
+    boost::asio::dispatch(logic_, [self, ec] { self->OnReadError(ec); });
+    return;
+  }
+  boost::asio::dispatch(logic_, [self, bytes_transferred] { self->OnData(bytes_transferred); });
+}
+
+// [논리] 읽기 오류/상대 종료를 닫는 이유로 가려 Close한다.
+void Session::OnReadError(const boost::system::error_code& ec) {
   if (closed_) {
     return;
   }
-
-  if (ec) {
-    if (ec == boost::asio::error::eof) {
-      // 상대가 연결을 닫았다. 디코더에 처리 못 한 바이트가 남아 있으면 프레임 도중에 끊긴 것이다.
-      if (decoder_.buffered_bytes() > 0) {
-        Close(CloseReason::kTruncated,
-              "미완성 " + std::to_string(decoder_.buffered_bytes()) + "바이트가 남은 채 종료");
-      } else {
-        Close(CloseReason::kPeerClosed);
-      }
+  if (ec == boost::asio::error::eof) {
+    // 상대가 연결을 닫았다. 디코더에 처리 못 한 바이트가 남아 있으면 프레임 도중에 끊긴 것이다.
+    if (decoder_.buffered_bytes() > 0) {
+      Close(CloseReason::kTruncated,
+            "미완성 " + std::to_string(decoder_.buffered_bytes()) + "바이트가 남은 채 종료");
     } else {
-      Close(CloseReason::kReadError, DescribeError(ec));
+      Close(CloseReason::kPeerClosed);
     }
+  } else {
+    Close(CloseReason::kReadError, DescribeError(ec));
+  }
+}
+
+// [논리] 읽은 바이트를 디코더에 넣고 완성된 프레임을 처리한 뒤, 다음 읽기를 요청한다.
+void Session::OnData(std::size_t bytes_transferred) {
+  if (closed_) {
     return;
   }
-
   decoder_.Append(std::span<const std::uint8_t>(read_buffer_.data(), bytes_transferred));
   ProcessFrames();
 
   // ProcessFrames 안에서 연결이 닫혔다면 더 읽지 않는다.
   if (!closed_) {
-    DoRead();
+    auto self = shared_from_this();
+    boost::asio::dispatch(strand_, [self] { self->DoRead(); });
   }
 }
 
@@ -334,7 +365,9 @@ void Session::SendMessage(protocol::MessageId id, const google::protobuf::Messag
                                            std::to_string(protocol::ToUint16(id)) + ")");
     return;
   }
-  Send(std::move(*wire));
+  // 송신 큐와 소켓은 strand가 맡는다. 입출력 스레드가 따로 있으면 여기서는 넘기기만 하고 돌아간다.
+  auto self = shared_from_this();
+  boost::asio::dispatch(strand_, [self, bytes = std::move(*wire)]() mutable { self->Send(std::move(bytes)); });
 }
 
 // ChatClient 인터페이스 구현. 채팅 방이 이 연결에 메시지를 보낸다.
@@ -364,15 +397,17 @@ void Session::HandlePing(const protocol::Frame& frame) {
 // 진행 중이 아니면 쓰기를 시작한다. 한 연결에서 async_write를 동시에 두 번 걸면 바이트가 섞일 수
 // 있으므로, 항상 "앞의 쓰기가 끝난 뒤 다음 쓰기" 순서를 지킨다. (docs/protocol.md)
 void Session::Send(std::vector<std::uint8_t> wire_bytes) {
-  if (closed_) {
+  if (io_closed_) {
     return;
   }
 
   // 한도 검사: 상대가 응답을 읽지 않으면 큐가 계속 쌓이므로 한도를 넘으면 연결을 끊는다.
   if (pending_send_bytes_ + wire_bytes.size() > options_.max_pending_send_bytes) {
-    Close(CloseReason::kSendQueueOverflow,
-          "대기 중 " + std::to_string(pending_send_bytes_) + "바이트, 한도 " +
-              std::to_string(options_.max_pending_send_bytes) + "바이트");
+    // 더 쌓지 않는다. 실제 닫기(방/서비스 정리, 통계, 소켓 닫기)는 논리 구역이 한다.
+    io_closed_ = true;
+    RequestClose(CloseReason::kSendQueueOverflow,
+                 "대기 중 " + std::to_string(pending_send_bytes_) + "바이트, 한도 " +
+                     std::to_string(options_.max_pending_send_bytes) + "바이트");
     return;
   }
 
@@ -380,8 +415,9 @@ void Session::Send(std::vector<std::uint8_t> wire_bytes) {
   send_queue_.push_back(std::move(wire_bytes));
 
   // 송신 큐 길이 관찰: 이 연결의 최대치와 서버 전체 최대치를 갱신한다.
-  if (send_queue_.size() > max_send_queue_) {
-    max_send_queue_ = send_queue_.size();
+  send_queue_depth_.store(send_queue_.size(), std::memory_order_relaxed);
+  if (send_queue_.size() > max_send_queue_.load(std::memory_order_relaxed)) {
+    max_send_queue_.store(send_queue_.size(), std::memory_order_relaxed);
   }
   Stats::UpdateMax(stats_.max_send_queue_depth, send_queue_.size());
 
@@ -399,27 +435,28 @@ void Session::DoWrite() {
   // 큐의 맨 앞 요소를 가리키는 버퍼를 넘긴다. deque의 push_back은 기존 요소의 위치를 바꾸지
   // 않으므로, 쓰기가 끝날 때까지 새 프레임이 큐 뒤에 추가되어도 이 버퍼는 안전하다.
   boost::asio::async_write(socket_, boost::asio::buffer(send_queue_.front()),
-                           [this, self](const boost::system::error_code& ec, std::size_t bytes) {
-                             OnWrite(ec, bytes);
-                           });
+                           boost::asio::bind_executor(strand_, [this, self](const boost::system::error_code& ec,
+                                                                            std::size_t bytes) { OnWrite(ec, bytes); }));
 }
 
-// 쓰기가 끝났을 때 호출된다. 성공하면 맨 앞 프레임을 큐에서 빼고, 남은 프레임이 있으면 다음 쓰기를 시작한다.
+// [strand] 쓰기가 끝났을 때 호출된다. 성공하면 맨 앞 프레임을 큐에서 빼고, 남은 프레임이 있으면 다음 쓰기를 시작한다.
 void Session::OnWrite(const boost::system::error_code& ec, std::size_t /*bytes_transferred*/) {
   if (ec) {
-    // Close()가 이미 불린 뒤에 취소된 쓰기라면 무시한다. 그렇지 않으면 쓰기 오류로 정리한다.
-    if (!closed_) {
-      Close(CloseReason::kWriteError, DescribeError(ec));
+    // 우리가 소켓을 닫은 뒤에 취소된 쓰기라면 무시한다. 그렇지 않으면 쓰기 오류로 정리한다.
+    if (!io_closed_) {
+      io_closed_ = true;
+      RequestClose(CloseReason::kWriteError, DescribeError(ec));
     }
     return;
   }
 
-  ++frames_sent_;
+  frames_sent_.fetch_add(1, std::memory_order_relaxed);
   ++stats_.frames_sent;
   pending_send_bytes_ -= send_queue_.front().size();
   send_queue_.pop_front();
+  send_queue_depth_.store(send_queue_.size(), std::memory_order_relaxed);
 
-  if (closed_) {
+  if (io_closed_) {
     return;  // 쓰기가 진행되는 동안 연결이 닫혔다면 더 보내지 않는다.
   }
   if (send_queue_.empty()) {
@@ -429,13 +466,24 @@ void Session::OnWrite(const boost::system::error_code& ec, std::size_t /*bytes_t
   }
 }
 
+// [strand] 소켓을 닫는다. 진행 중이던 읽기/쓰기가 operation_aborted로 완료되고, 그 핸들러들은 io_closed_를
+// 보고 바로 반환한다. 주의: send_queue_는 여기서 비우지 않는다. 진행 중인 쓰기가 큐 맨 앞 버퍼를 아직 쓰고
+// 있을 수 있고, 윈도우(IOCP)는 취소가 완료되기 전까지 그 메모리를 계속 사용할 수 있다. 큐는 쓰기 핸들러가
+// 끝나 이 객체가 소멸할 때 함께 해제된다.
+void Session::CloseSocket() {
+  io_closed_ = true;
+  boost::system::error_code ignored;
+  socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored);
+  socket_.close(ignored);
+}
+
 // 연결을 정리한다. 처음 한 번만 동작한다.
 // 순서: 상태 표시 -> 로그/통계 -> 소켓 닫기 -> 서버에 알림
 void Session::Close(CloseReason reason, std::string_view detail) {
-  if (closed_) {
+  if (closed_.load()) {
     return;
   }
-  closed_ = true;
+  closed_.store(true);
 
   // 입장해 있었다면 방에서 빼고 남은 사람에게 알린다. (입장하지 않았다면 방이 아무것도 하지 않는다)
   // 채팅 방과 게임 방 모두 같은 규칙이다.
@@ -446,15 +494,12 @@ void Session::Close(CloseReason reason, std::string_view detail) {
   const std::uint64_t remaining = --stats_.current_connections;
   Log(LevelFor(reason), "[종료] id=", id_, " 원격=", remote_, " 이유=", ToString(reason),
       detail.empty() ? "" : " (", detail, detail.empty() ? "" : ")", " 수신프레임=", frames_received_,
-      " 송신프레임=", frames_sent_, " 최대송신큐=", max_send_queue_, " 현재연결=", remaining);
+      " 송신프레임=", frames_sent_.load(std::memory_order_relaxed),
+      " 최대송신큐=", max_send_queue_.load(std::memory_order_relaxed), " 현재연결=", remaining);
 
-  // 소켓을 닫으면 진행 중이던 읽기/쓰기가 operation_aborted로 완료된다. 그 핸들러들은 closed_를 보고 바로 반환한다.
-  // 주의: send_queue_는 여기서 비우지 않는다. 진행 중인 쓰기가 큐 맨 앞 버퍼를 아직 쓰고 있을 수 있고,
-  // 윈도우(IOCP)는 취소가 완료되기 전까지 그 메모리를 계속 사용할 수 있다. 큐는 쓰기 핸들러가 끝나 이
-  // 객체가 소멸할 때 함께 해제된다.
-  boost::system::error_code ignored;
-  socket_.shutdown(boost::asio::ip::tcp::socket::shutdown_both, ignored);
-  socket_.close(ignored);
+  // 소켓은 입출력 구역의 것이므로 strand에서 닫는다(입출력 스레드가 따로 없으면 이 자리에서 바로 닫힌다).
+  auto self = shared_from_this();
+  boost::asio::dispatch(strand_, [self] { self->CloseSocket(); });
 
   if (on_close_) {
     on_close_(id_);

@@ -1,0 +1,4 @@
+﻿Tag: ab, rooms: 500,400, reps: 3
+OLD server: C:\dev\yong_old\build\windows-local\Release\game_server.exe (built from commit cb9d3c8)
+NEW server: C:\Users\limch\OneDrive\문서\GitHub\YongFrame\build\windows-local\Release\game_server.exe  commit: 03722ec + uncommitted instrumentation/bench options
+Top CPU-time background processes at start: chrome, EpicGamesLauncher, EOSOverlayRenderer-Win64-Shipping, claude, ChatGPT, Discord, claude, claude

@@ -1,0 +1,3 @@
+﻿Tag: decomp, rooms: 400, reps: 3, conditions: X0,X1,X2,X3
+Commit: 03722ec (working tree has uncommitted changes: instrumentation + bench options)
+Top CPU-time background processes at start: chrome, EpicGamesLauncher, EOSOverlayRenderer-Win64-Shipping, claude, ChatGPT, Discord, claude, chrome

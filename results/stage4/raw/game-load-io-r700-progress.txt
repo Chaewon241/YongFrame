@@ -1,0 +1,6 @@
+﻿io-r700-IO2-r700-rep1 exit= pre_idle_cpu=8.5 clean pc_cpu_avg=72.9 pc_cpu_max=96.5 top=chrome/EOSOverlayRenderer-Win64-Shipping/chrome/EpicGamesLauncher/Discord
+io-r700-IO4-r700-rep1 exit= pre_idle_cpu=3.3 clean pc_cpu_avg=34.7 pc_cpu_max=50.8 top=chrome/UnrealEditor/EOSOverlayRenderer-Win64-Shipping/chrome/Discord
+io-r700-IO2-r700-rep2 exit= pre_idle_cpu=5.5 clean pc_cpu_avg=36.7 pc_cpu_max=75.6 top=chrome/UnrealEditor/Discord/EOSOverlayRenderer-Win64-Shipping/chrome
+io-r700-IO4-r700-rep2 exit= pre_idle_cpu=6.5 clean pc_cpu_avg=40.7 pc_cpu_max=72.7 top=chrome/Discord/EOSOverlayRenderer-Win64-Shipping/chrome/EpicGamesLauncher
+io-r700-IO2-r700-rep3 exit= pre_idle_cpu=9.5 clean pc_cpu_avg=30.6 pc_cpu_max=41.5 top=chrome/Discord/EOSOverlayRenderer-Win64-Shipping/chrome/EpicGamesLauncher
+io-r700-IO4-r700-rep3 exit= pre_idle_cpu=7.6 clean pc_cpu_avg=34.1 pc_cpu_max=50.9 top=chrome/Discord/EOSOverlayRenderer-Win64-Shipping/chrome/EpicGamesLauncher

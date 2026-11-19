@@ -16,6 +16,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#ifdef _WIN32
+#include <crtdbg.h>
+#endif
+#include <cstdio>
+#include <cstdlib>
+#include <exception>
 #include <functional>
 #include <future>
 #include <memory>
@@ -30,7 +36,37 @@ namespace game::testing_support {
 
 class QuietLogEnvironment : public ::testing::Environment {
  public:
-  void SetUp() override { server::SetMinLogLevel(server::LogLevel::kError); }
+  void SetUp() override {
+    server::SetMinLogLevel(server::LogLevel::kError);
+    // 파일로 리디렉션해도 실패 메시지가 즉시 나오게 한다. 테스트가 비정상 종료(abort)해도 그 직전까지의 출력이
+    // 남는다. 출력량이 적어 성능 영향은 없다.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+#ifdef _WIN32
+    // Debug CRT의 assert/abort가 대화상자로 멈추지 않고 stderr로 메시지를 내고 종료하게 한다.
+    _set_abort_behavior(_WRITE_ABORT_MSG, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#ifdef _DEBUG
+    for (const int type : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
+      _CrtSetReportMode(type, _CRTDBG_MODE_FILE);
+      _CrtSetReportFile(type, _CRTDBG_FILE_STDERR);
+    }
+#endif
+#endif
+    // 잡히지 않은 예외로 프로세스가 죽을 때(다른 스레드 포함) 원인을 출력하고 종료한다.
+    std::set_terminate([] {
+      if (const auto exception = std::current_exception()) {
+        try {
+          std::rethrow_exception(exception);
+        } catch (const std::exception& e) {
+          std::fprintf(stderr, "[terminate] 잡히지 않은 예외: %s\n", e.what());
+        } catch (...) {
+          std::fprintf(stderr, "[terminate] 잡히지 않은 알 수 없는 예외\n");
+        }
+      } else {
+        std::fprintf(stderr, "[terminate] 예외 없이 terminate 호출됨 (joinable 스레드 소멸 등)\n");
+      }
+      std::abort();
+    });
+  }
 };
 
 inline server::ServerConfig DefaultServerConfig() {
@@ -38,6 +74,20 @@ inline server::ServerConfig DefaultServerConfig() {
   config.bind_address = "127.0.0.1";
   config.port = 0;  // 빈 포트를 OS가 고른다. 테스트끼리 포트가 겹치지 않는다.
   config.stats_interval_seconds = 0;
+  // 같은 테스트를 입출력 스레드를 둔 서버로도 돌리기 위한 스위치. ctest가 환경변수로 켠다(CMakeLists.txt의
+  // *_io4 테스트). 값이 없거나 숫자가 아니면 0(단일 스레드)이다.
+#ifdef _WIN32
+  char* env = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&env, &length, "GAME_TEST_IO_THREADS") == 0 && env != nullptr) {
+    config.io_threads = static_cast<std::uint32_t>(std::strtoul(env, nullptr, 10));
+    std::free(env);
+  }
+#else
+  if (const char* env = std::getenv("GAME_TEST_IO_THREADS")) {
+    config.io_threads = static_cast<std::uint32_t>(std::strtoul(env, nullptr, 10));
+  }
+#endif
   return config;
 }
 
