@@ -19,14 +19,21 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <map>
+#include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <boost/asio.hpp>
 
+#include "account/account_repository.h"
+#include "account/login_info.h"
 #include "chat/chat_client.h"
+#include "farm/farm_repository.h"
 #include "game.pb.h"
+#include "play/farm_persistence.h"
 #include "play/play_config.h"
 #include "play/room.h"
 
@@ -38,6 +45,18 @@ using GameClient = chat::ChatClient;
 // 방 코드를 만드는 함수. 숫자 6자리 문자열을 돌려줘야 한다(아니면 서버가 버리고 다시 뽑는다).
 // 테스트에서 일부러 같은 코드를 반복해서 충돌 처리를 확인할 수 있게 바꿔 끼울 수 있다.
 using RoomCodeGenerator = std::function<std::string()>;
+
+// 게임 서비스가 계정 서비스에 묻고 알리는 함수들. 서버가 계정 서비스와 이어 준다(게스트만 있는 서버와 단위 시험에서는
+// 비워 둔다. 비어 있으면 모든 연결이 로그인하지 않은 것으로 다룬다).
+struct AccountHooks {
+  // 이 연결이 로그인했다면 그 정보(계정 번호, 닉네임).
+  std::function<std::optional<account::LoginInfo>(std::uint64_t client_id)> login_of;
+  // 로그인한 연결의 누적 기록(메모리의 최신 절대값).
+  std::function<std::optional<account::AccountStats>(std::uint64_t client_id)> stats_of;
+  // 로그인한 연결의 누적 기록에 delta를 더하고 갱신된 절대값을 돌려준다.
+  std::function<std::optional<account::AccountStats>(std::uint64_t client_id, const account::AccountStats& delta)>
+      add_progress;
+};
 
 struct GameStats {
   using Counter = std::atomic<std::uint64_t>;
@@ -63,6 +82,8 @@ struct GameStats {
   Counter builds_rejected{0};        // 거부한 건설 수 (방에 없음, 종류, 상한, 너무 멂, 겹침, 자원 부족)
   Counter structures_completed{0};   // 건설이 끝난 구조물 수
   Counter structure_updates_sent{0}; // 보낸 StructureUpdate 수 (수신자 수만큼 센다)
+  Counter farms_opened{0};           // 농장을 열어 방으로 만든 횟수(이미 열린 농장에 들어간 것은 제외)
+  Counter farm_open_failures{0};     // 농장을 열지 못한 횟수(저장소 오류, 방 코드 충돌, 복원 실패)
   // 틱 시간의 단계별 누적(마이크로초). 병목을 가르려고 계측한다. 합 = 계산 + 갱신 + 구성 + 전송 + 기타(루프 오버헤드).
   Counter tick_us_step{0};     // 월드 이동 계산(World::Step)
   Counter tick_us_update{0};   // 재생/완공 갱신(노드 재생, 구조물 완공)
@@ -79,6 +100,22 @@ class GameService {
 
   GameService(const GameService&) = delete;
   GameService& operator=(const GameService&) = delete;
+
+  // 계정 서비스와 이어 주는 함수들. 로그인한 연결은 방에서 계정의 ID가 닉네임이 되고, 방 만들기는 그 계정의 농장을
+  // 여는 것이 된다(농장 저장소가 있을 때). 시작하기 전에 한 번 정한다.
+  void SetAccountHooks(AccountHooks hooks) { hooks_ = std::move(hooks); }
+
+  // 농장 저장소를 정한다(시작하기 전에 한 번). 넘기면 로그인한 연결의 방 만들기는 농장을 열고, 변경은 저장소에 쓴다.
+  // 넘기지 않으면 모든 방이 저장하지 않는 임시 방이다.
+  void SetFarmRepository(std::shared_ptr<farm::FarmRepository> repository);
+
+  // 서버가 시작할 때 부른다: 모든 농장 코드를 읽어 게스트 방 코드가 농장 코드와 겹치지 않게 예약한다. 읽지 못해도
+  // 서버는 계속 동작한다(그 경우 게스트 방이 안 열린 농장의 코드를 쓸 수 있고, 그 농장은 열 때 충돌로 거절된다).
+  void LoadFarmCodes();
+
+  // 농장 저장 통계(저장소가 없으면 빈 문자열).
+  std::string FarmSummary() const;
+  const FarmPersistence* farm_persistence() const { return persistence_.get(); }
 
   // ---- 연결이 보낸 요청 처리. 응답은 client->Deliver로 돌려준다. ----
   void HandleCreateRoom(const std::shared_ptr<GameClient>& client, const protocol::CreateRoomRequest& request);
@@ -119,7 +156,31 @@ class GameService {
   struct Connection {
     std::weak_ptr<GameClient> client;
     std::string room_code;
+    std::uint64_t account_id = 0;  // 로그인한 연결이면 계정 번호(농장 방에서만 0이 아니다)
   };
+
+  // 열려 있는 농장 하나의 메모리 상태. 방 코드로 찾는다. 방이 닫히면 지운다.
+  struct FarmRuntime {
+    std::uint64_t farm_id = 0;
+    std::uint64_t owner_account_id = 0;
+    std::map<std::uint64_t, farm::StoredPlayer> players;  // 지금 방에 없는 사람들의 마지막 인벤토리(방에 있는 사람은 Member가 진실)
+    std::map<std::uint32_t, std::uint64_t> builders;      // 구조물 번호 -> 지은 계정
+  };
+
+  // ---- 농장 ----
+  void OpenFarm(const std::shared_ptr<GameClient>& client, const account::LoginInfo& login);
+  void OnFarmFound(const std::shared_ptr<GameClient>& client, const account::LoginInfo& login,
+                   farm::FarmResult<std::optional<farm::FarmData>> result);
+  void CreateNewFarm(const std::shared_ptr<GameClient>& client, const account::LoginInfo& login, int attempt);
+  void OnFarmCreated(const std::shared_ptr<GameClient>& client, const account::LoginInfo& login, std::string code,
+                     int attempt, farm::FarmResult<farm::FarmData> result);
+  void FinishOpenFarm(const std::shared_ptr<GameClient>& client, const account::LoginInfo& login, farm::FarmData data);
+  void RejectOpen(const std::shared_ptr<GameClient>& client, protocol::GameResult result);
+  // 채집/건설로 계정의 누적 기록과 이 농장의 인벤토리가 바뀌었음을 저장 대기열에 알린다. immediate이면 바로 저장한다.
+  void NoteProgress(Room& room, std::uint64_t client_id, const account::AccountStats& delta, bool immediate);
+  std::vector<farm::StoredStructure> ExportStructures(const Room& room) const;
+  // 방에서 나가는 사람(그리고 비게 되는 방)의 상태를 저장 대기열에 넣고 바로 저장한다.
+  void PersistLeaver(Room& room, const Member& member, std::uint64_t account_id);
 
   // 방을 만들 새 코드를 뽑는다. 겹치는 코드가 계속 나오면 빈 문자열.
   std::string NewRoomCode();
@@ -137,6 +198,13 @@ class GameService {
   boost::asio::steady_timer timer_;
   const PlayConfig config_;
   RoomCodeGenerator generator_;
+  AccountHooks hooks_;
+  std::shared_ptr<farm::FarmRepository> farm_repo_;
+  std::shared_ptr<FarmPersistence> persistence_;
+  std::unordered_map<std::string, FarmRuntime> farms_;  // 열려 있는 농장. 키: 방 코드
+  std::unordered_set<std::string> reserved_codes_;      // 농장 코드(DB에 있는 것). 게스트 방은 이 코드를 쓰지 않는다
+  std::unordered_set<std::uint64_t> opening_;           // 농장을 여는 중인 연결(저장소 응답을 기다린다)
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // 저장소 핸들러가 서비스가 아직 있는지 확인하는 표지
   GameStats stats_;
   std::unordered_map<std::string, std::unique_ptr<Room>> rooms_;
   std::unordered_map<std::uint64_t, Connection> connections_;  // 방에 들어간 연결만

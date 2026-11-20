@@ -52,6 +52,12 @@ class StructureSet {
   // 새 번호를 돌려준다. 바뀐 구조물로 기록한다.
   std::uint32_t Add(StructureType type, float x, float y, std::uint64_t tick);
 
+  // 저장되어 있던 구조물을 되살린다(농장을 열 때). 건설 중이면 remaining_ticks 뒤에 완료되고 완료면 지금 완료된 것으로
+  // 둔다. 허용 여부는 이미 판정된 것이라 겹침 등은 검사하지 않는다. 새 번호(1부터 이어짐)를 돌려주고, 모르는 종류면 0을
+  // 돌려준다(아무것도 더하지 않는다). 바뀐 구조물로 기록하지 않는다(방 상태에 이미 들어간다).
+  std::uint32_t Restore(StructureType type, float x, float y, StructureState state, std::uint64_t remaining_ticks,
+                        std::uint64_t tick);
+
   // 틱 번호가 tick이 되었을 때 완료될 구조물을 완료로 바꾼다(바뀐 구조물로 기록). 완료한 수를 돌려준다.
   std::uint32_t Advance(std::uint64_t tick);
 

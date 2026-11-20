@@ -95,6 +95,28 @@ Room::RemoveResult Room::RemoveMember(std::uint64_t client_id) {
   return result;
 }
 
+bool Room::RestoreStructure(std::uint32_t structure_id, std::uint32_t type, float x, float y, bool complete,
+                            std::uint64_t remaining_ticks) {
+  if (type != static_cast<std::uint32_t>(StructureType::kHouse)) {
+    return false;
+  }
+  const std::uint32_t id = structures_.Restore(static_cast<StructureType>(type), x, y,
+                                               complete ? StructureState::kComplete : StructureState::kBuilding,
+                                               remaining_ticks, world_.tick());
+  return id != 0 && id == structure_id;
+}
+
+bool Room::SetInventory(std::uint64_t client_id, std::uint32_t wood, std::uint32_t stone) {
+  for (Member& member : members_) {
+    if (member.client_id == client_id) {
+      member.wood = wood;
+      member.stone = stone;
+      return true;
+    }
+  }
+  return false;
+}
+
 GatherOutcome Room::Gather(std::uint64_t client_id, std::uint32_t node_id) {
   GatherOutcome outcome;
   const auto it = std::find_if(members_.begin(), members_.end(),

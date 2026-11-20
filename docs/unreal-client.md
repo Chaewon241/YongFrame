@@ -96,8 +96,13 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 | 111 | `WorldSnapshot{tick, players[{player_id, x, y, last_input_seq}]}` | S→C |
 | 107 / 108 | `GatherRequest{node_id}` / `GatherResponse{result, node_id, wood, stone}` | C→S / S→C |
 | 112 | `ResourceUpdate{tick, nodes[{node_id, hp}]}` (바뀐 노드가 있는 틱에만) | S→C |
+| 120 / 121 | `RegisterRequest{login_name, password}` / `RegisterResponse{result}` (결과는 `AccountResult`, `proto/account.proto`) | C→S / S→C |
+| 122 / 123 | `LoginRequest{login_name, password}` / `LoginResponse{result, profile{login_name, wood_gathered, stone_gathered, houses_built}}` | C→S / S→C |
+| 124 / 125 | `ProfileRequest{}` / `ProfileResponse{result, profile}` (로그인 필요) | C→S / S→C |
 | 113 / 114 | `BuildRequest{structure_type, x, y}` / `BuildResponse{result, structure_id, wood, stone}` | C→S / S→C |
 | 115 | `StructureUpdate{tick, structures[{structure_id, type, x, y, width, height, state, ready_tick}]}` (새로 생기거나 바뀐 구조물이 있는 틱에만) | S→C |
+
+**계정과 농장 저장(서버 구현 완료, Unreal 클라이언트는 아직 구현하지 않음):** 로그인(122)한 연결의 `CreateRoomRequest`는 닉네임을 무시하고 **내 농장을 연다**(방 코드는 농장이 있는 동안 같다). 농장 방에는 로그인한 사람만 입장하고(게스트는 `GAME_LOGIN_REQUIRED` 19), 로그인한 사람은 임시 방에 입장할 수 없다(`GAME_ROOM_NOT_FOUND`). 농장을 불러오지 못하면 `GAME_STORAGE_UNAVAILABLE` 20이다. 비밀번호는 **평문으로 전송된다(TLS 없음)**. 설계와 규칙은 [persistence.md](persistence.md)다.
 
 자원 채집(107, 108, 112, `RoomState.nodes`, 결과 코드 9~12)의 규칙은 [stage4-gather.md](stage4-gather.md)가 기준이고, Unreal 쪽 구현은 아래 "자원 채집 (Unreal)" 절이다. 집 짓기(113~115, `RoomState.structures`, 결과 코드 13~17)와 이동 충돌은 [content-roadmap.md](content-roadmap.md)가 기준이고 Unreal 쪽은 "집 짓기 (Unreal)" 절이다.
 

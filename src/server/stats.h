@@ -33,6 +33,7 @@ struct Stats {
   Counter network_errors{0};         // 읽기/쓰기 오류 (연결 리셋 등)
   Counter send_queue_overflows{0};   // 느린 수신자로 송신 큐가 한도를 넘음
   Counter truncated_connections{0};  // 프레임 중간에 상대가 연결을 끊음
+  Counter auth_failure_closes{0};    // 로그인 실패 횟수 초과로 서버가 연결을 닫음
   Counter internal_errors{0};        // 서버 내부 문제 (정상이라면 0)
 
   // ---- 송신 큐 ----
@@ -57,7 +58,7 @@ struct Stats {
         << get(decode_errors) << " 알수없는ID=" << get(unknown_message_ids)
         << " 파싱=" << get(parse_errors) << " 네트워크=" << get(network_errors)
         << " 송신큐초과=" << get(send_queue_overflows) << " 중간종료=" << get(truncated_connections)
-        << " 내부=" << get(internal_errors) << '}';
+        << " 로그인실패종료=" << get(auth_failure_closes) << " 내부=" << get(internal_errors) << '}';
     return out.str();
   }
 };

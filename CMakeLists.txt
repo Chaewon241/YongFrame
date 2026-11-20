@@ -13,6 +13,7 @@ find_package(GTest CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(boost_mysql CONFIG REQUIRED)  # 2단계: Asio 기반 MySQL 클라이언트 (Boost.MySQL)
 find_package(OpenSSL REQUIRED)             # Boost.MySQL이 인증/TLS에 사용
+find_package(unofficial-sodium CONFIG REQUIRED)  # 계정(P1): 비밀번호 해시(Argon2id)
 include(GoogleTest)
 
 # 모든 타깃에 공통으로 적용하는 컴파일 옵션.
@@ -28,7 +29,7 @@ function(apply_project_options target)
 endfunction()
 
 # proto/*.proto -> 빌드 디렉터리의 생성 코드. 서버와 테스트 클라이언트가 같은 라이브러리를 쓴다.
-add_library(game_proto STATIC proto/ping.proto proto/chat.proto proto/game.proto)
+add_library(game_proto STATIC proto/ping.proto proto/chat.proto proto/game.proto proto/account.proto)
 target_link_libraries(game_proto PUBLIC protobuf::libprotobuf)
 target_include_directories(game_proto PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/generated)
 protobuf_generate(
@@ -74,10 +75,42 @@ target_link_libraries(chat_room_test PRIVATE chat_core GTest::gtest_main)
 apply_project_options(chat_room_test)
 gtest_discover_tests(chat_room_test)
 
+# 계정(docs/persistence.md): 입력 규칙, 비밀번호 해시(libsodium Argon2id), 저장소 인터페이스와 메모리 구현, 계정 서비스.
+# 소켓을 모르므로 가짜 연결로 단위 테스트할 수 있다. 해시는 시험에서 빠른 가짜로 바꿔 끼운다.
+add_library(account_core STATIC
+  src/account/account_rules.cpp
+  src/account/password_hasher.cpp
+  src/account/in_memory_account_repository.cpp
+  src/account/account_service.cpp)
+target_include_directories(account_core PUBLIC src)
+target_link_libraries(account_core PUBLIC chat_core game_proto Boost::headers unofficial-sodium::sodium Threads::Threads)
+apply_project_options(account_core)
+
+add_executable(account_rules_test tests/account_rules_test.cpp)
+target_link_libraries(account_rules_test PRIVATE account_core GTest::gtest_main)
+apply_project_options(account_rules_test)
+gtest_discover_tests(account_rules_test)
+
+add_executable(password_hasher_test tests/password_hasher_test.cpp)
+target_link_libraries(password_hasher_test PRIVATE account_core GTest::gtest_main)
+apply_project_options(password_hasher_test)
+gtest_discover_tests(password_hasher_test)
+
+add_executable(account_service_test tests/account_service_test.cpp)
+target_link_libraries(account_service_test PRIVATE account_core GTest::gtest_main)
+apply_project_options(account_service_test)
+gtest_discover_tests(account_service_test)
+
+# 농장 저장(docs/persistence.md): 저장소 인터페이스(헤더)와 메모리 구현. 소켓을 모르므로 가짜 연결로 단위 테스트할 수 있다.
+add_library(farm_core STATIC src/farm/in_memory_farm_repository.cpp)
+target_include_directories(farm_core PUBLIC src)
+target_link_libraries(farm_core PUBLIC account_core Boost::headers Threads::Threads)
+apply_project_options(farm_core)
+
 # 게임 로직(4단계): 월드(이동 계산), 방, 방 관리와 틱. 소켓을 모르므로 가짜 연결로 단위 테스트할 수 있다.
-add_library(play_core STATIC src/play/world.cpp src/play/resources.cpp src/play/structures.cpp src/play/room.cpp src/play/game_service.cpp)
+add_library(play_core STATIC src/play/world.cpp src/play/resources.cpp src/play/structures.cpp src/play/room.cpp src/play/farm_persistence.cpp src/play/game_service.cpp)
 target_include_directories(play_core PUBLIC src)
-target_link_libraries(play_core PUBLIC chat_core game_proto Boost::headers Threads::Threads)
+target_link_libraries(play_core PUBLIC chat_core account_core farm_core game_proto Boost::headers Threads::Threads)
 apply_project_options(play_core)
 
 add_executable(play_world_test tests/play_world_test.cpp)
@@ -119,11 +152,29 @@ if(WIN32)
 endif()
 apply_project_options(chat_mysql)
 
+# 계정 MySQL 저장소: AccountRepository를 Boost.MySQL로 구현한다(접속 정보와 연결 방식은 채팅 저장소와 같다).
+add_library(account_mysql STATIC src/account/mysql_account_repository.cpp)
+target_include_directories(account_mysql PUBLIC src)
+target_link_libraries(account_mysql PUBLIC account_core chat_mysql Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
+if(WIN32)
+  target_link_libraries(account_mysql PUBLIC ws2_32 mswsock)
+endif()
+apply_project_options(account_mysql)
+
+# 농장 MySQL 저장소: FarmRepository를 Boost.MySQL로 구현한다(접속 정보와 연결 방식은 채팅/계정 저장소와 같다).
+add_library(farm_mysql STATIC src/farm/mysql_farm_repository.cpp)
+target_include_directories(farm_mysql PUBLIC src)
+target_link_libraries(farm_mysql PUBLIC farm_core chat_mysql Boost::mysql OpenSSL::SSL OpenSSL::Crypto common_util)
+if(WIN32)
+  target_link_libraries(farm_mysql PUBLIC ws2_32 mswsock)
+endif()
+apply_project_options(farm_mysql)
+
 # 서버 핵심 로직: 연결 하나를 다루는 Session과 연결을 받는 Server. 실행 파일과 분리해 두어
 # 나중에 통합 테스트가 같은 코드를 그대로 링크할 수 있다.
 add_library(server_core STATIC src/server/session.cpp src/server/server.cpp)
 target_include_directories(server_core PUBLIC src)
-target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto chat_core play_core common_util Threads::Threads)
+target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto chat_core play_core account_core common_util Threads::Threads)
 if(WIN32)
   target_link_libraries(server_core PUBLIC ws2_32 mswsock)  # Winsock
 endif()
@@ -131,7 +182,7 @@ apply_project_options(server_core)
 
 # 서버 실행 파일: 인자 파싱과 io_context 실행만 담당한다.
 add_executable(game_server src/server/main.cpp)
-target_link_libraries(game_server PRIVATE server_core chat_mysql)
+target_link_libraries(game_server PRIVATE server_core chat_mysql account_mysql farm_mysql)
 if(WIN32)
   target_link_libraries(game_server PRIVATE winmm)  # 게임 틱을 위해 타이머 해상도를 1ms로 올린다
 endif()
@@ -185,6 +236,14 @@ gtest_discover_tests(game_integration_test)
 # 같은 시나리오를 입출력 스레드 4개를 둔 서버로도 돌린다(tests/test_support.h의 GAME_TEST_IO_THREADS).
 gtest_discover_tests(game_integration_test TEST_SUFFIX _io4 TEST_LIST game_integration_test_io4_tests PROPERTIES ENVIRONMENT GAME_TEST_IO_THREADS=4)
 
+# 계정 통합 테스트: 가입/로그인/중복 접속/실패 제한/방 닉네임/저장소 장애를 실제 TCP로 검증한다.
+add_executable(account_integration_test tests/account_integration_test.cpp)
+target_link_libraries(account_integration_test PRIVATE server_core client_core GTest::gtest_main)
+apply_project_options(account_integration_test)
+gtest_discover_tests(account_integration_test)
+# 같은 시나리오를 입출력 스레드 4개를 둔 서버로도 돌린다(tests/test_support.h의 GAME_TEST_IO_THREADS).
+gtest_discover_tests(account_integration_test TEST_SUFFIX _io4 TEST_LIST account_integration_test_io4_tests PROPERTIES ENVIRONMENT GAME_TEST_IO_THREADS=4)
+
 # 부하 생성기(3단계): 많은 연결로 Ping을 보내 지연, 처리량, 오류, 서버 CPU/메모리를 잰다.
 add_executable(load_client src/tools/load_client.cpp)
 target_link_libraries(load_client PRIVATE client_core)
@@ -226,6 +285,31 @@ add_executable(chat_mysql_test tests/chat_mysql_test.cpp)
 target_link_libraries(chat_mysql_test PRIVATE chat_mysql server_core client_core GTest::gtest_main)
 apply_project_options(chat_mysql_test)
 gtest_discover_tests(chat_mysql_test)
+
+# 농장 저장 대기열 단위 시험(소켓 없이 인메모리 농장 저장소로).
+add_executable(farm_persistence_test tests/farm_persistence_test.cpp)
+target_link_libraries(farm_persistence_test PRIVATE play_core farm_core GTest::gtest_main)
+apply_project_options(farm_persistence_test)
+gtest_discover_tests(farm_persistence_test)
+
+add_executable(farm_service_test tests/farm_service_test.cpp)
+target_link_libraries(farm_service_test PRIVATE play_core farm_core GTest::gtest_main)
+apply_project_options(farm_service_test)
+gtest_discover_tests(farm_service_test)
+
+# 농장 통합 테스트: 열기/채집/건설/나가기/다시 열기/저장 시점/저장소 장애를 실제 TCP로 검증한다.
+add_executable(farm_integration_test tests/farm_integration_test.cpp)
+target_link_libraries(farm_integration_test PRIVATE server_core client_core GTest::gtest_main)
+apply_project_options(farm_integration_test)
+gtest_discover_tests(farm_integration_test)
+# 같은 시나리오를 입출력 스레드 4개를 둔 서버로도 돌린다(tests/test_support.h의 GAME_TEST_IO_THREADS).
+gtest_discover_tests(farm_integration_test TEST_SUFFIX _io4 TEST_LIST farm_integration_test_io4_tests PROPERTIES ENVIRONMENT GAME_TEST_IO_THREADS=4)
+
+# 계정 MySQL 시험: 비밀번호(GAME_DB_PASSWORD 또는 GAME_DB_PASSWORD_FILE)가 없으면 건너뛴다. 시험 전용 테이블만 쓴다.
+add_executable(account_mysql_test tests/account_mysql_test.cpp)
+target_link_libraries(account_mysql_test PRIVATE account_mysql farm_mysql chat_mysql server_core client_core GTest::gtest_main)
+apply_project_options(account_mysql_test)
+gtest_discover_tests(account_mysql_test)
 
 # 툴체인 확인용. 서버 구현이 시작되면 제거한다.
 add_executable(hello_asio src/hello_asio.cpp)

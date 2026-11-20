@@ -46,6 +46,7 @@
 
 #include <boost/asio.hpp>
 
+#include "account/account_service.h"
 #include "chat/chat_client.h"
 #include "chat/chat_room.h"
 #include "play/game_service.h"
@@ -65,6 +66,7 @@ enum class CloseReason {
   kUnknownMessageId,   // 서버가 처리하지 않는 메시지 ID
   kParseError,         // Protobuf 파싱 실패
   kSendQueueOverflow,  // 송신 큐에 쌓인 바이트가 한도를 넘음 (느린 수신자)
+  kAuthFailures,       // 로그인 실패 횟수 초과 (무차별 대입 방지)
   kInternalError,      // 서버 내부 문제 (정상이라면 발생하지 않음)
   kServerShutdown,     // 서버가 종료되며 연결을 닫음
 };
@@ -90,12 +92,13 @@ class Session : public std::enable_shared_from_this<Session>, public chat::ChatC
   // stats:  서버 전체 통계. 서버보다 오래 살지 않는다는 전제로 참조만 저장한다.
   // room:   이 연결이 속할 수 있는 채팅 방. 서버가 소유하며 세션보다 오래 산다.
   // game:   이 연결이 들어갈 수 있는 게임 방들을 관리하는 서비스. 서버가 소유하며 세션보다 오래 산다.
+  // account: 가입/로그인과 연결별 로그인 상태를 관리하는 서비스. 서버가 소유하며 세션보다 오래 산다.
   // logic:  논리 실행자. 방/서비스/서버를 호출하는 일은 모두 이 위에서 한다(스레드 1개 전제).
   // io_keepalive: 소켓이 속한 입출력 풀(io_context)을 세션이 사라질 때까지 살려 두는 공유 소유권. 소켓은 자신이
   //         속한 io_context보다 먼저 소멸해야 하기 때문이다. 입출력 풀이 따로 없으면 nullptr.
   Session(boost::asio::ip::tcp::socket socket, std::uint64_t id, Stats& stats,
           const SessionOptions& options, chat::ChatRoom& room, play::GameService& game,
-          boost::asio::any_io_executor logic, std::shared_ptr<void> io_keepalive, CloseCallback on_close);
+          account::AccountService& account, boost::asio::any_io_executor logic, std::shared_ptr<void> io_keepalive, CloseCallback on_close);
 
   // 통계와 로그를 갱신하고 첫 읽기를 시작한다. shared_ptr로 만든 뒤에 논리 실행자에서 호출해야 한다.
   void Start();
@@ -132,6 +135,7 @@ class Session : public std::enable_shared_from_this<Session>, public chat::ChatC
   void HandlePing(const protocol::Frame& frame);
   void HandleChatFrame(const protocol::Frame& frame);
   void HandleGameFrame(const protocol::Frame& frame);
+  void HandleAccountFrame(const protocol::Frame& frame);
 
   // 프레임 본문을 message로 파싱한다. 실패하면 연결을 닫고(kParseError) false를 돌려준다.
   bool ParsePayload(const protocol::Frame& frame, google::protobuf::MessageLite& message, const char* name);
@@ -158,6 +162,7 @@ class Session : public std::enable_shared_from_this<Session>, public chat::ChatC
   const SessionOptions options_;
   chat::ChatRoom& room_;
   play::GameService& game_;
+  account::AccountService& account_;
   boost::asio::any_io_executor logic_;                      // 논리 실행자
   boost::asio::strand<boost::asio::any_io_executor> strand_;  // 이 연결의 입출력 직렬화
   CloseCallback on_close_;

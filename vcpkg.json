@@ -6,6 +6,7 @@
     "boost-asio",
     "protobuf",
     "gtest",
-    "boost-mysql"
+    "boost-mysql",
+    "libsodium"
   ]
 }

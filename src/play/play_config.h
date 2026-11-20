@@ -45,6 +45,10 @@ struct PlayConfig {
   float build_range_cm = 500.0f;             // 서버가 아는 내 위치에서 격자에 맞춘 중심까지(경계 포함)
   std::uint32_t build_ticks = 100;           // 건설 중 상태가 이어지는 틱 수(5초)
   std::uint32_t max_structures = 20;         // 방당 구조물 상한
+
+  // ---- 농장 저장 (docs/persistence.md). 게임 규칙이 아니라 저장 방식의 기본값이다 ----
+  // 채집처럼 자주 일어나는 변경을 모아서 DB에 쓰는 주기(게임 틱 수). 20Hz에서 200틱 = 10초. 0이면 주기 저장을 하지 않는다.
+  std::uint64_t farm_flush_interval_ticks = 200;
   float node_collision_radius_cm = 60.0f;    // 나무/돌이 이동을 막는 원의 반지름(고갈되면 막지 않는다)
 
   // ---- 구역 분리 (docs/content-roadmap.md "구역 분리"). 임의 기본값 ----

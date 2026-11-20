@@ -28,7 +28,10 @@
 #include <stdexcept>
 #include <thread>
 
+#include "account/in_memory_account_repository.h"
+#include "account_test_support.h"
 #include "chat/in_memory_chat_repository.h"
+#include "farm/in_memory_farm_repository.h"
 #include "server/log.h"
 #include "server/server.h"
 
@@ -94,14 +97,27 @@ inline server::ServerConfig DefaultServerConfig() {
 // io_context를 받아 저장소를 만드는 함수. 저장소는 서버의 io_context 위에서 돌아야 하므로, TestServer가
 // 자신의 io_context를 넘겨 호출한다.
 using RepositoryFactory = std::function<std::shared_ptr<chat::ChatRepository>(boost::asio::io_context&)>;
+// 계정 저장소를 만드는 함수(MySQL 계정 저장소를 끼울 때 쓴다). 넘기지 않으면 인메모리 구현이다.
+using AccountRepositoryFactory = std::function<std::shared_ptr<account::AccountRepository>(boost::asio::io_context&)>;
+// 농장 저장소를 만드는 함수(MySQL 농장 저장소를 끼울 때 쓴다). 넘기지 않으면 인메모리 구현이다.
+using FarmRepositoryFactory = std::function<std::shared_ptr<farm::FarmRepository>(boost::asio::io_context&)>;
 
 // 테스트 한 개가 쓰는 서버. 만들면 서버가 시작되고, 소멸하면 정상 종료한다.
 class TestServer {
  public:
-  explicit TestServer(server::ServerConfig config = DefaultServerConfig(), RepositoryFactory factory = nullptr)
+  // hasher: 비밀번호 해시 구현. 넘기지 않으면 빠른 가짜(FastPasswordHasher)를 쓴다(진짜 Argon2id는 시험을 느리게 한다).
+  // 계정 저장소는 항상 장애/지연을 주입할 수 있는 인메모리 구현이다(accounts()).
+  explicit TestServer(server::ServerConfig config = DefaultServerConfig(), RepositoryFactory factory = nullptr,
+                      std::shared_ptr<account::PasswordHasher> hasher = nullptr,
+                      AccountRepositoryFactory account_factory = nullptr, FarmRepositoryFactory farm_factory = nullptr)
       : repository_(factory ? factory(io_) : std::make_shared<chat::InMemoryChatRepository>(io_)),
         memory_repository_(dynamic_cast<chat::InMemoryChatRepository*>(repository_.get())),
-        server_(io_, std::move(config), repository_) {
+        accounts_(account_factory ? account_factory(io_) : std::make_shared<account::InMemoryAccountRepository>(io_)),
+        memory_accounts_(dynamic_cast<account::InMemoryAccountRepository*>(accounts_.get())),
+        hasher_(hasher ? std::move(hasher) : std::make_shared<FastPasswordHasher>()),
+        farms_(farm_factory ? farm_factory(io_) : std::make_shared<farm::InMemoryFarmRepository>(io_, memory_accounts_ ? std::shared_ptr<account::InMemoryAccountRepository>(accounts_, memory_accounts_) : nullptr)),
+        memory_farms_(dynamic_cast<farm::InMemoryFarmRepository*>(farms_.get())),
+        server_(io_, std::move(config), repository_, accounts_, hasher_, farms_) {
     server_.Start();
     finished_ = finished_promise_.get_future();
     thread_ = std::thread([this] {
@@ -131,6 +147,36 @@ class TestServer {
   const server::Stats& stats() const { return server_.stats(); }
   const chat::ChatStats& chat_stats() const { return server_.chat_stats(); }
   const play::GameStats& game_stats() const { return server_.game_stats(); }
+  const account::AccountStatsCounters& account_stats() const { return server_.account_stats(); }
+
+  // 계정 저장소(인메모리)에 장애(SetFailing)나 지연(SetDelay)을 주입하거나 저장된 값을 확인할 때 쓴다.
+  // 농장 저장소(인메모리)에 장애(SetFailing, SetSaveFailing)나 지연(SetDelay)을 주입하거나 저장된 값을 확인할 때 쓴다.
+  farm::InMemoryFarmRepository& farms() {
+    if (memory_farms_ == nullptr) {
+      throw std::logic_error("이 TestServer는 인메모리 농장 저장소를 쓰지 않는다");
+    }
+    return *memory_farms_;
+  }
+
+  // 서버의 로직 스레드에서 fn을 실행하고 끝나기를 기다린다(게임 서비스 같은 스레드 안전하지 않은 객체를 시험에서 만질 때).
+  void RunOnServer(std::function<void()> fn) {
+    std::promise<void> done;
+    auto finished = done.get_future();
+    boost::asio::post(io_, [&fn, &done] {
+      fn();
+      done.set_value();
+    });
+    finished.wait();
+  }
+
+  play::GameService& game() { return server_.game(); }
+
+  account::InMemoryAccountRepository& accounts() {
+    if (memory_accounts_ == nullptr) {
+      throw std::logic_error("이 TestServer는 인메모리 계정 저장소를 쓰지 않는다");
+    }
+    return *memory_accounts_;
+  }
 
   // 인메모리 저장소에 장애(SetFailing)나 지연(SetDelay)을 주입할 때 쓴다. 다른 저장소를 넘겼다면 쓸 수 없다.
   chat::InMemoryChatRepository& repository() {
@@ -146,6 +192,11 @@ class TestServer {
   boost::asio::io_context io_;
   std::shared_ptr<chat::ChatRepository> repository_;
   chat::InMemoryChatRepository* memory_repository_;  // repository_가 인메모리일 때만 가리킨다
+  std::shared_ptr<account::AccountRepository> accounts_;
+  account::InMemoryAccountRepository* memory_accounts_;  // accounts_가 인메모리일 때만 가리킨다
+  std::shared_ptr<account::PasswordHasher> hasher_;
+  std::shared_ptr<farm::FarmRepository> farms_;
+  farm::InMemoryFarmRepository* memory_farms_;  // farms_가 인메모리일 때만 가리킨다
   server::Server server_;
   std::thread thread_;
   std::promise<void> finished_promise_;  // io_context 스레드가 끝났음을 알린다.

@@ -22,6 +22,7 @@ const char* ToString(CloseReason reason) {
     case CloseReason::kUnknownMessageId: return "알 수 없는 메시지 ID";
     case CloseReason::kParseError: return "Protobuf 파싱 실패";
     case CloseReason::kSendQueueOverflow: return "송신 큐 한도 초과";
+    case CloseReason::kAuthFailures: return "로그인 실패 횟수 초과";
     case CloseReason::kInternalError: return "서버 내부 오류";
     case CloseReason::kServerShutdown: return "서버 종료";
   }
@@ -51,6 +52,7 @@ void CountClose(Stats& stats, CloseReason reason) {
     case CloseReason::kUnknownMessageId: ++stats.unknown_message_ids; break;
     case CloseReason::kParseError: ++stats.parse_errors; break;
     case CloseReason::kSendQueueOverflow: ++stats.send_queue_overflows; break;
+    case CloseReason::kAuthFailures: ++stats.auth_failure_closes; break;
     case CloseReason::kInternalError: ++stats.internal_errors; break;
     case CloseReason::kPeerClosed:
     case CloseReason::kServerShutdown: break;
@@ -77,7 +79,7 @@ std::string DescribeError(const boost::system::error_code& ec) {
 
 Session::Session(boost::asio::ip::tcp::socket socket, std::uint64_t id, Stats& stats,
                  const SessionOptions& options, chat::ChatRoom& room, play::GameService& game,
-                 boost::asio::any_io_executor logic, std::shared_ptr<void> io_keepalive,
+                 account::AccountService& account, boost::asio::any_io_executor logic, std::shared_ptr<void> io_keepalive,
                  CloseCallback on_close)
     : io_keepalive_(std::move(io_keepalive)),
       id_(id),
@@ -85,6 +87,7 @@ Session::Session(boost::asio::ip::tcp::socket socket, std::uint64_t id, Stats& s
       options_(options),
       room_(room),
       game_(game),
+      account_(account),
       logic_(std::move(logic)),
       // 이 연결의 strand는 소켓이 속한 입출력 실행자 위에 만든다(멤버 선언 순서상 socket_보다 먼저 만들어지므로
       // 아직 옮기지 않은 인자 socket에서 실행자를 얻는다).
@@ -226,6 +229,11 @@ void Session::HandleFrame(const protocol::Frame& frame) {
     case protocol::MessageId::kBuildRequest:
       HandleGameFrame(frame);
       return;
+    case protocol::MessageId::kRegisterRequest:
+    case protocol::MessageId::kLoginRequest:
+    case protocol::MessageId::kProfileRequest:
+      HandleAccountFrame(frame);
+      return;
     default:
       HandleChatFrame(frame);
       return;
@@ -337,6 +345,41 @@ void Session::HandleGameFrame(const protocol::Frame& frame) {
       break;  // HandleFrame이 걸러 주므로 여기 오지 않는다.
   }
   Close(CloseReason::kInternalError, "처리되지 않는 게임 요청 ID " + std::to_string(frame.message_id));
+}
+
+// 가입/로그인/내 기록 요청을 파싱해 계정 서비스에 넘긴다. 파싱에 실패하면 프로토콜 위반이라 연결을 닫는다.
+// 비밀번호가 든 메시지이므로 본문은 로그에 남기지 않는다(요청이 왔다는 사실만 남긴다).
+void Session::HandleAccountFrame(const protocol::Frame& frame) {
+  const std::shared_ptr<chat::ChatClient> self = shared_from_this();
+
+  switch (static_cast<protocol::MessageId>(frame.message_id)) {
+    case protocol::MessageId::kRegisterRequest: {
+      game::protocol::RegisterRequest request;
+      if (ParsePayload(frame, request, "RegisterRequest")) {
+        Log(LogLevel::kDebug, "[가입요청] id=", id_);
+        account_.HandleRegister(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kLoginRequest: {
+      game::protocol::LoginRequest request;
+      if (ParsePayload(frame, request, "LoginRequest")) {
+        Log(LogLevel::kDebug, "[로그인요청] id=", id_);
+        account_.HandleLogin(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kProfileRequest: {
+      game::protocol::ProfileRequest request;
+      if (ParsePayload(frame, request, "ProfileRequest")) {
+        account_.HandleProfile(self);
+      }
+      return;
+    }
+    default:
+      break;  // HandleFrame이 걸러 주므로 여기 오지 않는다.
+  }
+  Close(CloseReason::kInternalError, "처리되지 않는 계정 요청 ID " + std::to_string(frame.message_id));
 }
 
 // 프레임 본문(payload)을 message로 파싱한다. 실패하면 연결을 닫고 false.
@@ -489,6 +532,7 @@ void Session::Close(CloseReason reason, std::string_view detail) {
   // 채팅 방과 게임 방 모두 같은 규칙이다.
   room_.OnDisconnect(id_);
   game_.OnDisconnect(id_);
+  account_.OnDisconnect(id_);
 
   CountClose(stats_, reason);
   const std::uint64_t remaining = --stats_.current_connections;

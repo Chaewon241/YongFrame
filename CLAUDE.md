@@ -8,6 +8,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 - 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
 - **4단계(게임) 서버 최소 구현 완료(Windows)**: 방 만들기, 6자리 숫자 코드로 입장(최대 4명), 방장 변경, 빈 방 삭제, 서버 판정 이동(속도 360 cm/s, 처음에는 300이었고 이 값으로 부하를 쟀다. 맵 5,000 x 5,000 cm), 20Hz 방 전체 스냅샷. `ctest` 218개 통과(MySQL 11개 건너뜀. 채집 확장 뒤에는 251개). 값은 사용자가 정하지 않아 **임의 기본값**이며 `PlayConfig`에서 바꾼다. **부하 측정 완료: 방 500개(플레이어 2,000명)까지 합격, 600개부터 불합격**(results/stage4/game-load.md, Windows 루프백 한 대, 충돌과 속도 360 이전 서버. 이후 재측정은 450개까지 합격이었으나 확정 아님). Unreal 쪽 연동은 다음 작업이다. 설계와 검증은 [docs/stage4.md](docs/stage4.md), Unreal용 프로토콜과 기준 바이트는 [docs/unreal-client.md](docs/unreal-client.md).
 - **Unreal 연동 스파이크 성공**: `D:\UnrealProjects\YongClient`(이 저장소와 별개)에서 서버에 접속해 Ping 5건 왕복을 확인했다(docs/unreal-client.md). 5.4.4에서 먼저 확인하고 **UE 5.8.4(`D:\UE_5.8`)로 올려 다시 통과**했다(5.4 시점 프로젝트는 `YongClient_UE54_backup`). 5.8은 MSVC 14.44가 선호 버전이라 5.4 때의 우회가 필요 없고, 타깃은 `BuildSettingsVersion.Latest`를 쓴다. 이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치다. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. Unreal 프로젝트에는 접속 계층(`FGameNetworkConnection`)과 게임 메시지 계층(`FGameClient`)이 구현되어 실제 서버로 시험을 통과했다(docs/unreal-client.md). 그 프로젝트는 이 저장소와 별개인 로컬 git 저장소다(원격 없음). **게임 클라이언트 최소판 완료**: 서브시스템, 스냅샷 보간, 탑뷰 카메라, WASD 이동, 메뉴(방 만들기/코드 입장)와 HUD(UMG, 로직은 C++)를 만들었고, 에디터에서 창 2개(Play Standalone)로 서버에 접속해 한 방에 여러 명이 보이는 것을 사용자가 확인했다(docs/unreal-client.md "메뉴와 HUD"). 에셋은 Git LFS. **4단계 확장 1(자원 채집) 서버와 Unreal C++ 구현 완료(Windows, 에디터 쪽 에셋과 PIE 확인은 남음)**: 서버가 나무 30개/돌 20개 노드의 배치, 체력, 재생(30초)과 거리(200 cm)·쿨다운(0.5초) 판정을 소유하고, `E`로 쳐서 목재/석재를 얻는다. 서버 `ctest` 251개 통과(MySQL 11개 건너뜀), 변형 검증 서버 20가지를 모두 잡았다. 설계와 검증은 [docs/stage4-gather.md](docs/stage4-gather.md). **콘텐츠 조각 1(집 짓기와 이동 충돌) 서버와 Unreal C++ 구현 완료(Windows, 에디터 에셋과 PIE 확인, 부하 재측정은 남음)**: B로 건설 모드, 마우스 클릭으로 300x300 cm 집을 지음(목재 20, 석재 10, 5초 건설 중), 구조물과 살아 있는 나무/돌이 서버 판정 이동을 막음. `ctest` 324개(MySQL 11개 건너뜀) 모두 통과, 서버 변형 검증 30가지 중 29가지를 잡고 1가지는 동등 변형, Unreal 변형 검증 10가지를 모두 잡았다. **구역 분리**: 건물은 맵 중앙 정사각형(건설 구역, 사방 1,200 cm) 안에만, 자원 노드는 그 밖에만 놓이고 재생하며(`GAME_BUILD_OUT_OF_ZONE` 18), 재생 자리를 못 찾으면 1초마다 다시 찾는다(변형 검증 10가지를 모두 잡았다). **충돌 이후 부하 재측정에서는 450개까지 합격, 500개는 불합격이었으나 이것은 확정이 아니다**: 이후 실험에서 속도와 충돌은 CPU에 영향이 없었고, 같은 코드의 방당 CPU가 측정한 날의 PC 상태(배경 프로그램)에 따라 20% 넘게 달라졌으며, 이전 서버와의 같은 세션 비교는 배경 프로그램 때문에 무효가 되었다. 틱 시간의 약 98%는 전송(Deliver)이고 그 비용은 소켓 송신 시스템 호출이다(직렬화는 1% 미만, results/stage4/deliver-breakdown.md). 설계와 검증은 [docs/content-roadmap.md](docs/content-roadmap.md). PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싸야 한다(점에서 쪼개짐). **입출력 스레드 분리 구현과 측정 완료(개선 후보 A)**: 소켓 읽기/쓰기를 `--io-threads N`개 스레드가 나눠 맡고 게임 로직은 스레드 1개 그대로다. 같은 세션 비교에서 분리 이전은 방 500개 불합격(누락 4.8~7.8%)이었고 `--io-threads 2`는 600개, `4`는 700개까지 3회 합격했다(틱 스레드 전송 시간 92% 감소, 서버 전체 CPU 약 25% 증가, 일부 실행은 PC 부하가 섞였을 수 있음). `ctest` 427개 통과(MySQL 11개 건너뜀). 기본값은 0 유지(results/stage4/io-threads.md, docs/stage4.md).
+- **계정과 농장 저장(MySQL)은 진행 중이다(설계와 결과: [docs/persistence.md](docs/persistence.md)). P1(계정)과 P2(농장 저장)는 서버에 구현했고 인메모리 저장소로 시험했다(Windows)**: ID/비밀번호 가입과 로그인(비밀번호는 libsodium Argon2id 해시만 저장하고 해시 계산은 일꾼 스레드 `--hash-workers`), 내 기록 조회, 같은 계정의 중복 접속 거부, 연결당 로그인 실패 5회 제한, 게스트(로그인 없이 닉네임만)는 그대로 유지. **로그인한 사람의 방 만들기는 "내 농장 열기"**이고(계정당 농장 1개, 방 코드 고정), 집(건설 중이면 남은 틱까지)과 (농장, 계정)별 인벤토리와 계정별 누적 기록(채집량, 지은 집 수)이 MySQL에 저장된다. 저장은 쓰기 대기열(`FarmPersistence`)이 맡는다: 건설, 완공, 방을 나갈 때, 농장이 닫힐 때, 서버 종료 때는 바로, 채집은 10초마다 모아서, 저장이 실패해도 게임은 계속되고 다음 주기에 다시 저장한다(절대값 덮어쓰기라 멱등). 농장 방에는 로그인한 사람만, 임시 방에는 게스트만 들어간다. 메시지 ID 120~125(`proto/account.proto`), 결과 코드 19/20, 마이그레이션 `002`, `003`, `--storage mysql`이면 채팅, 계정, 농장이 모두 MySQL에 저장된다. 실제 MySQL 시험 `account_mysql_test`는 비밀번호를 환경변수로 주고 **사용자가** 실행해야 한다(만든 환경에서는 실행하지 못했다). **비밀번호가 평문으로 전송된다(TLS 없음).** P3(Unreal 로그인 화면)와 P4(저장 켬/끔 부하 측정)는 아직 안 했다.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -27,6 +28,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/stage4-gather.md](docs/stage4-gather.md) | 4단계 확장 1(자원 채집) 설계: 범위, 프로토콜(ID 107/108/112), 기본값, 완료 기준, 서버·Unreal 설계, MCP 작업 목록 (구현 전) |
 | [docs/content-roadmap.md](docs/content-roadmap.md) | 채집 이후 콘텐츠 로드맵(집 짓기 → 하루 → 농사 → 경제 → 저장)과 첫 조각(집 짓기, 이동 충돌 포함) 설계. 구현 전 계획 |
 | [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(5.4.4와 5.8.4에서 Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법, 겪은 문제, 확인 방법 |
+| [docs/persistence.md](docs/persistence.md) | 계정(ID/비밀번호)과 농장 저장(MySQL) 설계: 결정, 기본값, 스키마, 저장 규칙, 프로토콜(ID 120~), 검증과 성능 측정 계획, 작업 순서. 구현 전 |
 | [docs/server-journey.md](docs/server-journey.md) | 서버 시행착오 기록(포트폴리오용): 측정 도구 포화, 결론 철회 두 번, 병목 분해, 입출력 스레드 분리, 버그와 시험의 허점 |
 | [docs/unreal-client-structure.md](docs/unreal-client-structure.md) | Unreal 클라이언트 계층 구조, C++와 MCP의 책임 분담과 작업 순서, 검증 방법 (포트폴리오용 정리) |
 | [README.md](README.md) | 진입점(포트폴리오용). 결과 한눈에 보기, 구조, 단계 요약, 문서 지도, 빠른 시작, 한계 |
@@ -106,7 +108,7 @@ build/windows-local/Debug/chat_room_test.exe            # 채팅 방 로직 23�
 build/windows-local/Debug/chat_integration_test.exe     # 채팅 통합 20개 (실제 TCP)
 ```
 
-`ctest --test-dir build/windows-local -C Debug`로 전체 427개가 한 번에 실행된다(통합 테스트의 `_io4` 반복 포함)(MySQL 대상 11개는 비밀번호가 없으면 건너뜀) (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
+`ctest --test-dir build/windows-local -C Debug`로 전체 585개가 한 번에 실행된다(통합 테스트의 `_io4` 반복 포함)(MySQL 대상 35개는 비밀번호가 없으면 건너뜀) (gtest_discover_tests로 케이스별 등록). 특정 케이스만: `--gtest_filter=ServerIntegration.StopClosesAllOpenConnections`. 통합 테스트는 테스트 프로세스 안에서 진짜 `Server`를 포트 0(자동 배정)으로 띄우므로 서버를 따로 실행할 필요가 없다.
 
 ### 수동 확인 (서버 + ping_client)
 
@@ -138,6 +140,16 @@ build/windows-local/Debug/chat_mysql_test.exe                             # MySQ
 
 접속 정보 기본값은 127.0.0.1:3306, 계정 `game`, 데이터베이스 `game_chat`이며 서버는 `--db-host/--db-port/--db-user/--db-name`, 테스트는 `GAME_DB_HOST/PORT/USER/NAME`으로 바꾼다. 테스트는 `chat_messages_test` 테이블만 쓴다.
 
+#### 계정 MySQL 시험 (사용자가 실행)
+
+```bash
+$env:GAME_DB_PASSWORD = '비밀번호'                                    # 비밀번호를 채팅 창에 쓰지 않는다
+build/windows-local/Debug/db_migrate.exe                              # 운영 테이블 만들기(002 계정, 003 농장 적용)
+build/windows-local/Debug/account_mysql_test.exe                      # 시험 전용 테이블(accounts_test, account_stats_test, farms_test, farm_structures_test, farm_players_test)만 쓴다
+```
+
+`game_server.exe --port 7777 --storage mysql`이면 채팅 기록, 계정, 농장이 모두 MySQL에 저장된다(서버를 다시 켜도 같은 ID로 로그인되고 농장의 집, 인벤토리, 누적 기록이 복원된다). `db_migrate`를 먼저 실행해야 한다.
+
 ### 대화형 채팅 체험 (chat_client)
 
 ```bash
@@ -156,7 +168,7 @@ build/windows-local/Release/game_client.exe --port 7777 --create --nick alice   
 build/windows-local/Release/game_client.exe --port 7777 --join <방코드> --nick bob        # 터미널 3
 ```
 
-명령: `/create <닉네임>`, `/join <방코드> <닉네임>`, `/leave`, `/move <dx> <dy>`(길이 1 이하 방향), `/stop`, `/snap <N>`(N틱마다 위치 출력, 0이면 끔), `/nodes`(자원 노드 목록과 내 위치에서의 거리), `/gather [번호]`(노드를 한 번 침, 번호를 생략하면 가장 가까운 살아 있는 노드. 서버 허용 거리 200 cm 안으로 `/move`로 먼저 가야 한다), `/ping`, `/wait <밀리초>`, `/quit`, `/help`. 위치는 서버가 계산해 20Hz 스냅샷으로 보내며 클라이언트는 방향만 보낸다. 서버 로그는 `info`로 두면 방 생성/입장/퇴장/삭제만 남는다. `/build <x> <y>`(그 자리에 집을 지음, 내 위치 500 cm 이내), `/structures`(건물 목록)도 있다. 단위·통합 테스트는 `play_world_test`, `play_resources_test`, `play_structures_test`, `play_collision_test`, `play_room_test`, `game_service_test`, `game_integration_test`다.
+명령: `/create <닉네임>`, `/join <방코드> <닉네임>`, `/leave`, `/move <dx> <dy>`(길이 1 이하 방향), `/stop`, `/snap <N>`(N틱마다 위치 출력, 0이면 끔), `/nodes`(자원 노드 목록과 내 위치에서의 거리), `/gather [번호]`(노드를 한 번 침, 번호를 생략하면 가장 가까운 살아 있는 노드. 서버 허용 거리 200 cm 안으로 `/move`로 먼저 가야 한다), `/ping`, `/wait <밀리초>`, `/quit`, `/help`. 위치는 서버가 계산해 20Hz 스냅샷으로 보내며 클라이언트는 방향만 보낸다. 서버 로그는 `info`로 두면 방 생성/입장/퇴장/삭제만 남는다. `/build <x> <y>`(그 자리에 집을 지음, 내 위치 500 cm 이내), `/structures`(건물 목록)도 있다. 계정: `/register <ID> <비밀번호>`, `/login <ID> <비밀번호>`, `/profile`(내 누적 기록). 로그인하면 방에서 ID가 닉네임이 된다(비밀번호가 터미널에 보이고 평문으로 전송되는 개발용 도구다). 단위·통합 테스트는 `play_world_test`, `play_resources_test`, `play_structures_test`, `play_collision_test`, `play_room_test`, `game_service_test`, `game_integration_test`다.
 
 ### 게임 부하 측정 (4단계, game_load_client)
 
@@ -182,7 +194,7 @@ build/windows-local/Release/load_client.exe --port 7777 --connections 1000 --mod
 build/windows-local/Debug/game_server.exe --port 7777
 ```
 
-옵션: `--bind`(기본 127.0.0.1, VM/외부 접속은 0.0.0.0), `--io-threads`(소켓 입출력 스레드 수, 기본 0), `--port`, `--log-level`(기본 debug, 부하 실험은 info 이상), `--stats-interval`(초, 기본 10), `--max-send-queue-bytes`(기본 4 MiB), `--help`. 종료는 Ctrl+C(열린 연결을 모두 닫고 최종 통계를 출력).
+옵션: `--bind`(기본 127.0.0.1, VM/외부 접속은 0.0.0.0), `--io-threads`(소켓 입출력 스레드 수, 기본 0), `--hash-workers`(비밀번호 해시 일꾼 스레드 수, 기본 2), `--port`, `--log-level`(기본 debug, 부하 실험은 info 이상), `--stats-interval`(초, 기본 10), `--max-send-queue-bytes`(기본 4 MiB), `--help`. 종료는 Ctrl+C(열린 연결을 모두 닫고 최종 통계를 출력).
 
 ### 코드 구조
 
@@ -209,6 +221,12 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `tests/frame_codec_test.cpp`: 코덱 단위 테스트
 - `tests/server_integration_test.cpp`: 서버(Ping) 통합 테스트. 결과는 서버 `Stats` 카운터와 클라이언트가 받은 응답으로 확인
 - `tests/chat_rules_test.cpp`, `chat_room_test.cpp`, `chat_integration_test.cpp`: 채팅 규칙/방 로직/통합 테스트. `tests/test_support.h`에 서버를 띄우는 `TestServer`(저장소 장애·지연 주입 가능, 다른 저장소도 주입 가능)와 `WaitUntil`이, `tests/chat_test_client.h`에 클라이언트 쪽 도우미(`Connect`, `JoinOk`, `SendChat` 등)가 있다. `tests/chat_mysql_test.cpp`는 MySQL 대상 테스트
+- `src/account/account_rules.h/.cpp`: ID/비밀번호 규칙(ID는 소문자로 정규화, 순수 함수, `account_core` 라이브러리)
+- `src/account/password_hasher.h/.cpp`: 비밀번호 해시 인터페이스와 libsodium Argon2id 구현(`crypto_pwhash_str`). **해시는 비싸서 로직/입출력 스레드에서 직접 부르지 않는다**
+- `src/account/account_repository.h`, `in_memory_account_repository.*`, `mysql_account_repository.*`(`account_mysql` 라이브러리): 계정 저장소(비동기, `ChatRepository`와 같은 규칙). MySQL 구현은 테이블 이름을 옵션으로 받아 시험이 운영 테이블을 건드리지 않는다
+- `src/account/account_service.h/.cpp`: 가입/로그인/내 기록, 연결별 로그인 상태, 중복 접속 거부, 로그인 실패 제한, 해시 일꾼 스레드 풀. 로직 스레드에서만 부른다(해시 계산만 일꾼에서 돈다). `GameService`는 `SetAccountLookup`으로 로그인한 연결의 닉네임을 얻는다
+- `src/farm/farm_repository.h`, `in_memory_farm_repository.*`, `mysql_farm_repository.*`(`farm_core`, `farm_mysql` 라이브러리): 농장 저장소(비동기, 같은 저장소의 요청은 순서대로). `SaveFarm` 한 번이 하나의 트랜잭션(구조물/인벤토리/누적 기록의 절대값 upsert). 인메모리 구현은 장애/지연 주입을 지원
+- `src/play/farm_persistence.h/.cpp`: 농장 변경의 쓰기 대기열. 사건이 알리는 절대값을 모아 즉시 또는 주기(`PlayConfig::farm_flush_interval_ticks`)로 저장하고, 실패한 값은 다음 주기에 다시 저장한다(저장 중이면 겹쳐 보내지 않고 끝난 뒤 이어서). `GameService`가 소유한다
 - `src/play/play_config.h`: 게임 규칙 기본값(맵, 속도, 인원, 틱, 방 수 상한). 한 곳에서만 바꾼다
 - `src/play/world.h/.cpp`: 한 방의 위치와 이동 계산(순수 계산, 서버 판정). 방향 길이는 `double` `hypot`으로 구해 1로 제한한다(`play_core` 라이브러리)
 - `src/play/room.h/.cpp`: 방 한 개의 인원, 방장, 닉네임, 시작 칸(slot). 소켓과 시간을 모른다

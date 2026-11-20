@@ -40,6 +40,7 @@
 #include <boost/asio.hpp>
 
 #include "common/error_text.h"
+#include "account.pb.h"
 #include "game.pb.h"
 #include "ping.pb.h"
 #include "protocol/frame.h"
@@ -90,6 +91,26 @@ const char* ResultText(game::protocol::GameResult code) {
     case game::protocol::GAME_NOT_ENOUGH_RESOURCES: return "자원이 모자랍니다 (집: 목재 20, 석재 10)";
     case game::protocol::GAME_BUILD_TOO_FAR: return "너무 멀리 있습니다 (내 위치에서 500 cm 이내)";
     case game::protocol::GAME_STRUCTURE_LIMIT: return "방의 건물 수 상한입니다";
+    case game::protocol::GAME_BUILD_OUT_OF_ZONE: return "건설 구역(맵 중앙) 밖입니다";
+    case game::protocol::GAME_LOGIN_REQUIRED: return "농장에는 로그인한 사람만 들어갈 수 있습니다 (/login)";
+    case game::protocol::GAME_STORAGE_UNAVAILABLE: return "농장을 불러오거나 만들지 못했습니다 (서버 저장소 오류)";
+    default: break;
+  }
+  return "알 수 없는 결과";
+}
+
+const char* AccountResultText(game::protocol::AccountResult code) {
+  switch (code) {
+    case game::protocol::ACCOUNT_OK: return "성공";
+    case game::protocol::ACCOUNT_INVALID_LOGIN_NAME: return "ID 규칙 위반 (영문/숫자/밑줄 4~16자)";
+    case game::protocol::ACCOUNT_INVALID_PASSWORD: return "비밀번호 규칙 위반 (8~64바이트)";
+    case game::protocol::ACCOUNT_LOGIN_NAME_TAKEN: return "이미 있는 ID입니다";
+    case game::protocol::ACCOUNT_BAD_CREDENTIALS: return "ID 또는 비밀번호가 틀렸습니다";
+    case game::protocol::ACCOUNT_ALREADY_LOGGED_IN: return "이미 로그인했거나, 그 계정이 다른 곳에서 접속 중입니다";
+    case game::protocol::ACCOUNT_TOO_MANY_ATTEMPTS: return "로그인 실패가 너무 많습니다 (서버가 연결을 닫습니다)";
+    case game::protocol::ACCOUNT_STORAGE_UNAVAILABLE: return "서버의 저장소(DB) 오류입니다";
+    case game::protocol::ACCOUNT_SERVER_BUSY: return "서버가 바쁩니다 (이전 요청 처리 중이거나 해시 대기열이 가득 참)";
+    case game::protocol::ACCOUNT_NOT_LOGGED_IN: return "로그인이 필요합니다 (/login)";
     default: break;
   }
   return "알 수 없는 결과";
@@ -136,6 +157,9 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
 
     if (command == "/help") {
       std::cout << "명령:\n"
+                << "  /register <ID> <비밀번호>  계정을 만든다 (ID는 영문/숫자/밑줄 4~16자, 비밀번호 8~64바이트)\n"
+                << "  /login <ID> <비밀번호>     로그인한다. 로그인하면 방에서 ID가 닉네임이 된다\n"
+                << "  /profile                 내 누적 기록(채집량, 지은 집 수)을 본다 (로그인 필요)\n"
                 << "  /create <닉네임>        방을 만들고 방장이 된다 (방 코드가 출력됨)\n"
                 << "  /join <방코드> <닉네임>  코드로 방에 입장\n"
                 << "  /leave                  방에서 나간다 (연결은 유지)\n"
@@ -149,6 +173,27 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
                 << "  /ping                   서버 응답 확인\n"
                 << "  /wait <밀리초>          다음 줄 처리를 늦춤 (스크립트용)\n"
                 << "  /quit                   종료\n";
+    } else if (command == "/register" || command == "/login") {
+      // 주의: 비밀번호는 터미널에 그대로 보이고 서버로 평문 전송된다(TLS 없음). 개발용 도구다.
+      std::string login_name;
+      std::string password;
+      if (!(words >> login_name >> password)) {
+        std::cout << "사용법: " << command << " <ID> <비밀번호>\n";
+        return;
+      }
+      if (command == "/register") {
+        game::protocol::RegisterRequest request;
+        request.set_login_name(login_name);
+        request.set_password(password);
+        Send(MessageId::kRegisterRequest, request);
+      } else {
+        game::protocol::LoginRequest request;
+        request.set_login_name(login_name);
+        request.set_password(password);
+        Send(MessageId::kLoginRequest, request);
+      }
+    } else if (command == "/profile") {
+      Send(MessageId::kProfileRequest, game::protocol::ProfileRequest{});
     } else if (command == "/create") {
       std::string nickname;
       std::getline(words >> std::ws, nickname);
@@ -325,6 +370,11 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
     std::cout << std::defaultfloat;
   }
 
+  void PrintProfile(const game::protocol::AccountProfile& profile) const {
+    std::cout << "[내 기록] " << profile.login_name() << ": 누적 목재 " << profile.wood_gathered() << ", 누적 석재 "
+              << profile.stone_gathered() << ", 지은 집 " << profile.houses_built() << "\n";
+  }
+
   void PrintState(const game::protocol::RoomState& state) {
     my_player_id_ = state.your_player_id();
     nodes_.clear();
@@ -450,6 +500,31 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
           if (it != nodes_.end()) it->second.hp = changed.hp();
           std::cout << "[노드] 틱 " << u.tick() << ": " << changed.node_id() << "번 체력 " << changed.hp()
                     << (changed.hp() == 0 ? " (고갈)" : "") << "\n";
+        }
+        return;
+      }
+      case MessageId::kRegisterResponse: {
+        game::protocol::RegisterResponse r;
+        if (!parse(r)) break;
+        std::cout << "[가입] " << AccountResultText(r.result()) << "\n";
+        return;
+      }
+      case MessageId::kLoginResponse: {
+        game::protocol::LoginResponse r;
+        if (!parse(r)) break;
+        std::cout << "[로그인] " << AccountResultText(r.result()) << "\n";
+        if (r.result() == game::protocol::ACCOUNT_OK) {
+          PrintProfile(r.profile());
+        }
+        return;
+      }
+      case MessageId::kProfileResponse: {
+        game::protocol::ProfileResponse r;
+        if (!parse(r)) break;
+        if (r.result() == game::protocol::ACCOUNT_OK) {
+          PrintProfile(r.profile());
+        } else {
+          std::cout << "[내 기록] " << AccountResultText(r.result()) << "\n";
         }
         return;
       }

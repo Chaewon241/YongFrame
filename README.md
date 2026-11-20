@@ -2,13 +2,13 @@
 
 Boost.Asio 기반 C++20 게임 서버를 단계별로 만들고, **각 단계의 정확성과 성능을 재현 가능한 기록으로 남긴** 개인 프로젝트입니다. 패킷 송수신에서 시작해 채팅과 MySQL, 부하 측정, 서버가 상태를 소유하는 협동 게임(Unreal 5.8 클라이언트)까지 만들었습니다. 이 저장소의 핵심은 기능 목록보다 **"무엇을 가정했고, 무엇을 쟀고, 어디서 틀렸고, 어떻게 고쳤는가"의 기록**입니다.
 
-> 상태: Windows 기준 1~4단계 구현과 측정 완료. Linux 빌드는 아직 확인하지 않았습니다(보류). 측정은 모두 **한 PC의 루프백**(서버와 부하 생성기가 코어를 나눠 씀) 결과입니다.
+> 상태: Windows 기준 1~4단계 구현과 측정 완료. **그 뒤에 계정(ID/비밀번호)과 농장 저장(MySQL: 집, 인벤토리, 누적 채집량)을 서버에 구현해 인메모리 저장소로 시험했습니다.** 실제 MySQL 대상 시험은 사용자가 실행해야 하고, Unreal 로그인 화면과 저장 부하 측정은 아직 안 했습니다([docs/persistence.md](docs/persistence.md)). Linux 빌드는 아직 확인하지 않았습니다(보류). 성능 측정은 모두 **한 PC의 루프백**(서버와 부하 생성기가 코어를 나눠 씀), **저장 기능을 켜지 않은 구성**의 결과입니다.
 
 ## 결과 한눈에 보기
 
 | 영역 | 결과 | 근거 |
 | --- | --- | --- |
-| 정확성 | `ctest` 427개 통과(MySQL 대상 11개는 비밀번호 없으면 건너뜀, 실제 MySQL로 13개 통과 확인). 통합 테스트는 입출력 스레드 4개로도 반복 | [CLAUDE.md](CLAUDE.md), [docs/stage2.md](docs/stage2.md) |
+| 정확성 | `ctest` 585개 통과(MySQL 대상 35개는 비밀번호가 없으면 건너뜀. 채팅 저장소는 실제 MySQL로 13개 통과를 확인했고, 계정/농장 MySQL 시험은 아직 실행하지 못함). 통합 테스트는 입출력 스레드 4개로도 반복 | [CLAUDE.md](CLAUDE.md), [docs/stage2.md](docs/stage2.md) |
 | 시험의 신뢰 | 코드를 일부러 망가뜨려 시험이 잡는지 확인(변형 검증): 서버 채집 20가지, 건설/충돌 30가지, 입출력 분리 3가지, Unreal 쪽 수십 가지. 처음에 놓친 것과 시험으로 만들 수 없던 것도 기록 | [docs/server-journey.md](docs/server-journey.md) |
 | 단순 왕복(3단계) | Active **4,000연결(초당 4만 건)까지 3회 모두 합격**, 서버 스레드 1개의 처리량 상한 약 4.5만/s | [results/stage3/scaled.md](results/stage3/scaled.md) |
 | 로그 레벨 | `debug`는 `info`보다 응답당 CPU **약 5~6배** (부하 측정은 `info`) | [results/stage3/exp1-loglevel.md](results/stage3/exp1-loglevel.md) |
@@ -29,7 +29,7 @@ flowchart LR
         L["논리 구역 (스레드 1개)<br/>FrameDecoder, ChatRoom, GameService<br/>20Hz 틱, 판정, 스냅샷"]
         IO <-- "dispatch" --> L
     end
-    DB[("MySQL<br/>채팅 기록")]
+    DB[("MySQL (선택, --storage mysql)<br/>채팅 기록, 계정, 농장")]
     UE <-- "TCP<br/>[길이 u32][id u16][Protobuf]" --> IO
     L --> DB
 ```
@@ -46,6 +46,7 @@ flowchart LR
 | 2. 채팅 + MySQL | 입장/퇴장/방 전파/기록 조회, `ChatRepository` 인터페이스, Boost.MySQL, DB 장애 시 동작 | Windows 완료 | [stage2](docs/stage2.md), [protocol-chat](docs/protocol-chat.md) |
 | 3. 수용 규모 측정 | Idle/Active 워크로드, p50/p95/p99, 다중 스레드 부하 생성기, 로그 레벨과 Nagle 비교 | 기준·확장·실험 1~2 완료 (실험 3 "스레드 수"는 계획대로 하지 않았고, 같은 방향의 개선을 4단계에서 입출력 스레드 분리로 측정) | [stage3](docs/stage3.md), [results/stage3](results/stage3/) |
 | 4. 게임 | 방 코드 입장(최대 4명), 서버 판정 이동 20Hz, 자원 채집, 집 짓기와 이동 충돌, 건설 구역 분리 | 서버와 Unreal C++ 완료, 에디터 쪽 확인 일부 남음 | [stage4](docs/stage4.md), [stage4-gather](docs/stage4-gather.md), [content-roadmap](docs/content-roadmap.md) |
+| 5. 계정과 농장 저장 | ID/비밀번호(Argon2id 해시, 해시는 일꾼 스레드), 로그인한 사람의 방 = 내 농장(집, 인벤토리, 누적 기록을 MySQL에 저장, 건설은 바로·채집은 모아서·실패하면 재시도), 게스트 유지 | 서버 구현과 인메모리 시험 완료. 실제 MySQL 시험, Unreal, 부하 측정은 남음 | [persistence](docs/persistence.md) |
 | 4-성능. 부하 측정과 개선 | 방 500개 한계 발견 → 철회 → 병목 분해 → 입출력 스레드 분리 | 완료 | [server-journey](docs/server-journey.md), [results/stage4](results/stage4/) |
 | Unreal 연동 | 접속 계층 → 메시지 계층 → 서브시스템 → 게임 → UMG, MCP 작업 분담 | 최소판 완료 | [unreal-client-structure](docs/unreal-client-structure.md), [unreal-client](docs/unreal-client.md) |
 
@@ -65,6 +66,7 @@ flowchart LR
 | --- | --- |
 | [project.md](project.md) | 목표, 기술 선택, 단계별 로드맵, 범위 |
 | [docs/server-journey.md](docs/server-journey.md) | **서버 시행착오 기록**: 가설, 측정, 철회, 개선, 버그 |
+| [docs/persistence.md](docs/persistence.md) | **계정과 농장 저장(MySQL)**: 설계 결정, 스키마, 저장 규칙, 프로토콜, 구현 결과, 시험과 변형 검증, 한계 |
 | [docs/unreal-client-structure.md](docs/unreal-client-structure.md) | **Unreal 클라이언트 구조와 MCP 작업 방식** |
 | [docs/protocol.md](docs/protocol.md) | 1단계 TCP 패킷 형식과 오류 처리 계약 |
 | [docs/validation.md](docs/validation.md) | 기능 검증, 부하 측정, 비교 실험 기록 방식 |
@@ -107,6 +109,7 @@ build\windows-local\Release\game_client.exe --port 7777 --join <출력된 방 �
 
 ## 남은 일 (선택)
 
+0. **계정과 농장 저장:** 실제 MySQL 시험 실행(`account_mysql_test`, 사용자가 비밀번호를 환경변수로 줌), Unreal 로그인/가입 화면(P3), 저장 켬/끔 부하와 로그인 폭주 측정(P4), TLS(비밀번호가 지금은 평문으로 전송됨).
 1. `--io-threads 4`의 상한 재측정(새 계획 필요)과 느린 연결의 스냅샷 대체 처리.
 2. Linux 빌드와 측정(1단계 이후 보류).
 3. Unreal 에디터 쪽 확인 마무리, 비동기 접속, 다음 콘텐츠 조각(하루/시간, 농사).

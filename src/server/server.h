@@ -24,7 +24,11 @@
 
 #include <boost/asio.hpp>
 
+#include "account/account_repository.h"
+#include "account/account_service.h"
+#include "account/password_hasher.h"
 #include "chat/chat_repository.h"
+#include "farm/farm_repository.h"
 #include "chat/chat_room.h"
 #include "play/game_service.h"
 #include "server/session.h"
@@ -39,6 +43,7 @@ struct ServerConfig {
   SessionOptions session;
   chat::ChatRoomOptions chat;
   play::PlayConfig play;
+  account::AccountServiceOptions account;  // 해시 일꾼 수, 대기 상한, 로그인 실패 한도
   std::uint32_t stats_interval_seconds = 10;  // 0이면 주기 통계 출력을 끈다.
 
   // 소켓 읽기/쓰기를 맡을 입출력 스레드 수. 0이면 따로 두지 않고 Server에 넘긴 io_context(논리 스레드)가
@@ -54,8 +59,16 @@ class Server {
   //
   // repository: 채팅 기록을 저장하는 곳. 넘기지 않으면 메모리에 저장하는 구현을 만들어 쓴다.
   //             (서버가 꺼지면 기록이 사라진다. 테스트에서는 장애를 주입할 수 있는 구현을 넘긴다)
+  //
+  // accounts: 계정을 저장하는 곳. 넘기지 않으면 메모리 구현을 쓴다(서버가 꺼지면 계정이 사라진다).
+  // hasher:   비밀번호 해시 구현. 넘기지 않으면 libsodium(Argon2id)을 쓴다. 시험에서는 빠른 가짜를 넘긴다.
+  // farms:    농장(영속하는 방)을 저장하는 곳. 넘기지 않으면 메모리 구현을 쓴다(계정 저장소도 메모리 구현이면 누적 기록을
+  //           함께 저장해 준다).
   Server(boost::asio::io_context& io, ServerConfig config,
-         std::shared_ptr<chat::ChatRepository> repository = nullptr);
+         std::shared_ptr<chat::ChatRepository> repository = nullptr,
+         std::shared_ptr<account::AccountRepository> accounts = nullptr,
+         std::shared_ptr<account::PasswordHasher> hasher = nullptr,
+         std::shared_ptr<farm::FarmRepository> farms = nullptr);
 
   // 입출력 스레드를 정리한다(열린 연결이 남아 있으면 강제로 멈춘다).
   ~Server();
@@ -74,6 +87,7 @@ class Server {
   const Stats& stats() const { return stats_; }
   const chat::ChatStats& chat_stats() const { return room_->stats(); }
   const play::GameStats& game_stats() const { return game_->stats(); }
+  const account::AccountStatsCounters& account_stats() const { return account_->stats(); }
   play::GameService& game() { return *game_; }
 
   // 서버 통계와 채팅 통계를 한 줄로 합친 문자열. 주기 출력과 종료 시 출력에 쓴다.
@@ -105,6 +119,8 @@ class Server {
   Stats stats_;
   std::shared_ptr<chat::ChatRepository> repository_;
   std::unique_ptr<chat::ChatRoom> room_;
+  std::shared_ptr<account::AccountRepository> account_repository_;
+  std::shared_ptr<account::AccountService> account_;
   std::unique_ptr<play::GameService> game_;
   std::uint64_t next_session_id_ = 1;
   // 살아 있는 세션들. 키는 연결 번호. Session이 닫힐 때 콜백으로 여기서 지워진다.

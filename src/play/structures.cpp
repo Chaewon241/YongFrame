@@ -36,6 +36,25 @@ std::uint32_t StructureSet::Add(StructureType type, float x, float y, std::uint6
   return structure.id;
 }
 
+std::uint32_t StructureSet::Restore(StructureType type, float x, float y, StructureState state,
+                                    std::uint64_t remaining_ticks, std::uint64_t tick) {
+  Structure structure;
+  structure.type = type;
+  if (!FootprintOf(type, structure.width, structure.height)) {
+    return 0;
+  }
+  structure.id = static_cast<std::uint32_t>(structures_.size()) + 1;
+  structure.x = x;
+  structure.y = y;
+  structure.state = state;
+  structure.ready_tick = state == StructureState::kBuilding ? tick + remaining_ticks : tick;
+  structures_.push_back(structure);
+  if (state == StructureState::kBuilding) {
+    ++building_count_;
+  }
+  return structure.id;
+}
+
 std::uint32_t StructureSet::Advance(std::uint64_t tick) {
   if (building_count_ == 0) {
     return 0;

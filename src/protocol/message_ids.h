@@ -42,6 +42,14 @@ enum class MessageId : std::uint16_t {
   kBuildRequest = 113,
   kBuildResponse = 114,
   kStructureUpdate = 115,
+
+  // 계정 (docs/persistence.md)
+  kRegisterRequest = 120,
+  kRegisterResponse = 121,
+  kLoginRequest = 122,
+  kLoginResponse = 123,
+  kProfileRequest = 124,
+  kProfileResponse = 125,
 };
 
 // enum class는 정수로 자동 변환되지 않으므로, 프레임의 message_id(uint16_t)와 비교할 때 쓴다.
@@ -77,6 +85,12 @@ inline constexpr bool IsKnownMessageId(std::uint16_t id) {
     case MessageId::kBuildRequest:
     case MessageId::kBuildResponse:
     case MessageId::kStructureUpdate:
+    case MessageId::kRegisterRequest:
+    case MessageId::kRegisterResponse:
+    case MessageId::kLoginRequest:
+    case MessageId::kLoginResponse:
+    case MessageId::kProfileRequest:
+    case MessageId::kProfileResponse:
       return true;
   }
   return false;
@@ -97,6 +111,9 @@ inline constexpr bool IsClientRequestId(std::uint16_t id) {
     case MessageId::kMoveInput:
     case MessageId::kGatherRequest:
     case MessageId::kBuildRequest:
+    case MessageId::kRegisterRequest:
+    case MessageId::kLoginRequest:
+    case MessageId::kProfileRequest:
       return true;
     default:
       return false;

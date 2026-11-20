@@ -23,7 +23,9 @@
 
 #include <boost/asio.hpp>
 
+#include "account/mysql_account_repository.h"
 #include "chat/mysql_chat_repository.h"
+#include "farm/mysql_farm_repository.h"
 #include "common/db_credentials.h"
 #include "common/error_text.h"
 #include "server/log.h"
@@ -48,7 +50,8 @@ void PrintUsage(const char* program) {
             << "                              부하 측정 전용: on이면 구조물/노드가 이동을 막지 않음 (기본 off)\n"
             << "  --bench-prebuilt-structures <N>\n"
             << "                              부하 측정 전용: 방마다 완공된 집을 N개(최대 20) 미리 놓음 (기본 0)\n"
-            << "  --storage <memory|mysql>    채팅 기록 저장소 (기본 memory: 서버를 끄면 사라짐)\n"
+            << "  --hash-workers <N>          비밀번호 해시를 계산하는 일꾼 스레드 수 (기본 2, 1~16)\n"
+            << "  --storage <memory|mysql>    채팅 기록, 계정, 농장 저장소 (기본 memory: 서버를 끄면 사라짐)\n"
             << "  --db-host <주소>            MySQL 주소 (기본 127.0.0.1)\n"
             << "  --db-port <번호>            MySQL 포트 (기본 3306)\n"
             << "  --db-user <이름>            MySQL 계정 (기본 game)\n"
@@ -156,6 +159,12 @@ ParseResult ParseArgs(int argc, char** argv, game::server::ServerConfig& config,
         return ParseResult::kExitError;
       }
       config.io_threads = static_cast<std::uint32_t>(number);
+    } else if (arg == "--hash-workers") {
+      if (!ParseUnsigned(value, 16, number) || number == 0) {
+        std::cerr << "--hash-workers는 1~16 사이 숫자여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+      config.account.hash_workers = static_cast<unsigned>(number);
     } else if (arg == "--tcp-nodelay") {
       if (value == "on") {
         config.session.tcp_nodelay = true;
@@ -226,6 +235,8 @@ int main(int argc, char** argv) {
 
     // 저장소를 고른다. 넘기지 않으면(memory) Server가 메모리 저장소를 만들어 쓴다.
     std::shared_ptr<game::chat::MySqlChatRepository> mysql;
+    std::shared_ptr<game::account::MySqlAccountRepository> mysql_accounts;
+    std::shared_ptr<game::farm::MySqlFarmRepository> mysql_farms;
     if (storage.use_mysql) {
       std::string password_source;
       const auto password = game::common::ReadDbPassword(&password_source);
@@ -236,14 +247,16 @@ int main(int argc, char** argv) {
       }
       storage.mysql.password = *password;
       mysql = game::chat::MySqlChatRepository::Create(io, storage.mysql);
+      mysql_accounts = game::account::MySqlAccountRepository::Create(io, storage.mysql);
+      mysql_farms = game::farm::MySqlFarmRepository::Create(io, storage.mysql);
       game::server::Log(game::server::LogLevel::kInfo, "[서버] 저장소: MySQL ", storage.mysql.user, "@",
                         storage.mysql.host, ":", storage.mysql.port, "/", storage.mysql.database, " (비밀번호: ",
                         password_source, ")");
     } else {
-      game::server::Log(game::server::LogLevel::kInfo, "[서버] 저장소: 메모리 (서버를 끄면 기록이 사라집니다)");
+      game::server::Log(game::server::LogLevel::kInfo, "[서버] 저장소: 메모리 (서버를 끄면 채팅 기록과 계정이 사라집니다)");
     }
 
-    game::server::Server server(io, config, mysql);  // 여기서 bind에 실패하면 예외가 난다.
+    game::server::Server server(io, config, mysql, mysql_accounts, nullptr, mysql_farms);  // 여기서 bind에 실패하면 예외가 난다.
 
     // Ctrl+C / 종료 신호를 받으면 서버를 멈춘다. 핸들러는 io.run()을 돌리는 스레드에서 실행되므로
     // Server::Stop()을 안전하게 부를 수 있다.

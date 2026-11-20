@@ -115,6 +115,20 @@ class Room {
   StructureSet& structures() { return structures_; }
   const StructureSet& structures() const { return structures_; }
 
+  // ---- 농장(영속하는 방) ----
+  // 농장의 번호(저장소의 farm_id). 0이면 저장하지 않는 임시 방(게스트 방)이다.
+  std::uint64_t farm_id() const { return farm_id_; }
+  bool is_farm() const { return farm_id_ != 0; }
+  void set_farm_id(std::uint64_t farm_id) { farm_id_ = farm_id; }
+
+  // 저장되어 있던 구조물을 되살린다(농장을 열 때, 아직 사람이 없을 때). 저장된 번호는 1부터 이어져야 하며 새로 붙는 번호가
+  // 같아야 성공이다. 건설 중이면 remaining_ticks 뒤에 완료된다.
+  bool RestoreStructure(std::uint32_t structure_id, std::uint32_t type, float x, float y, bool complete,
+                        std::uint64_t remaining_ticks);
+
+  // 연결의 인벤토리를 정한다(저장된 값을 되살릴 때). 이 방에 없는 연결이면 false.
+  bool SetInventory(std::uint64_t client_id, std::uint32_t wood, std::uint32_t stone);
+
   // 연결이 건물을 짓는다. (x, y)는 짓고 싶은 중심이며 build_grid_cm 격자의 중심으로 맞춘다.
   // 판정 순서: 방에 없음 -> 모르는 종류 -> 구조물 상한 -> 너무 멂 -> 건설 구역 밖 -> 겹침/맵 밖 -> 자원 부족.
   // 거부되면 아무 상태도 바뀌지 않는다. 성공하면 비용을 차감하고 건설 중 구조물을 만든다. 시간은 월드 틱이다.
@@ -128,6 +142,7 @@ class Room {
   std::vector<Member> members_;
   std::uint32_t next_player_id_ = 1;
   std::uint32_t host_player_id_ = 0;  // 0이면 방장 없음(빈 방)
+  std::uint64_t farm_id_ = 0;         // 0이면 임시 방
   World world_;
   ResourceField resources_;
   StructureSet structures_;

@@ -1,0 +1,53 @@
+// 계정(가입, 로그인, 내 기록) 메시지. 설계와 규칙은 docs/persistence.md가 기준이다.
+// 주의: 비밀번호는 평문으로 전송된다(TLS는 이번 범위 밖). 서버는 비밀번호를 로그에 남기지 않는다.
+syntax = "proto3";
+package game.protocol;
+
+// 업무 규칙 위반을 알리는 결과 코드. 프로토콜 위반(잘못된 길이, 알 수 없는 ID, 파싱 실패)은 이 코드를 쓰지 않고
+// 연결을 종료한다.
+enum AccountResult {
+  ACCOUNT_OK = 0;
+  ACCOUNT_INVALID_LOGIN_NAME = 1;    // ID 형식 위반 (영문/숫자/밑줄 4~16자)
+  ACCOUNT_INVALID_PASSWORD = 2;      // 비밀번호 형식 위반 (8~64바이트)
+  ACCOUNT_LOGIN_NAME_TAKEN = 3;      // 이미 있는 ID
+  ACCOUNT_BAD_CREDENTIALS = 4;       // ID 또는 비밀번호가 틀림 (어느 쪽인지 알려 주지 않는다)
+  ACCOUNT_ALREADY_LOGGED_IN = 5;     // 이 연결이 이미 로그인했거나, 그 계정이 다른 연결에서 접속 중
+  ACCOUNT_TOO_MANY_ATTEMPTS = 6;     // 로그인 실패 횟수 초과(이 응답 뒤 연결이 닫힌다)
+  ACCOUNT_STORAGE_UNAVAILABLE = 7;   // 저장소(DB) 오류 또는 시간 초과
+  ACCOUNT_SERVER_BUSY = 8;           // 해시 작업 대기열이 가득 참, 이 연결의 이전 요청이 아직 처리 중, 서버 종료 중
+  ACCOUNT_NOT_LOGGED_IN = 9;         // 로그인이 필요한 요청
+}
+
+// 내 기록. 값이 0이면 필드가 생략된다.
+message AccountProfile {
+  string login_name = 1;
+  uint64 wood_gathered = 2;   // 누적 채집한 목재
+  uint64 stone_gathered = 3;  // 누적 채집한 석재
+  uint64 houses_built = 4;    // 누적으로 지은 집 수
+}
+
+message RegisterRequest {
+  string login_name = 1;
+  string password = 2;
+}
+
+message RegisterResponse {
+  AccountResult result = 1;
+}
+
+message LoginRequest {
+  string login_name = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  AccountResult result = 1;
+  AccountProfile profile = 2;  // 성공했을 때만
+}
+
+message ProfileRequest {}
+
+message ProfileResponse {
+  AccountResult result = 1;
+  AccountProfile profile = 2;  // 성공했을 때만
+}
