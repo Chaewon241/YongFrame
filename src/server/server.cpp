@@ -186,7 +186,7 @@ void Server::ScheduleStatsReport() {
     if (ec || stopped_) {
       return;  // 타이머가 취소됨(Stop)
     }
-    Log(LogLevel::kInfo, "[통계] ", FullSummary());
+    Log(LogLevel::kInfo, "[통계] ", StatsReport());
     ScheduleStatsReport();
   });
 }
@@ -194,6 +194,13 @@ void Server::ScheduleStatsReport() {
 std::string Server::FullSummary() const {
   return stats_.Summary() + ' ' + room_->stats().Summary() + " 게임{" + game_->stats().Summary() + "} 계정{" +
          account_->stats().Summary() + "} 농장{" + game_->FarmSummary() + '}';
+}
+
+std::string Server::StatsReport() const {
+  if (config_.stats_format == StatsFormat::kBlock) {
+    return '\n' + FormatStatsBlock(FullSummary());  // "[통계]" 다음 줄부터 묶음별로
+  }
+  return FullSummary();
 }
 
 void Server::Stop() {

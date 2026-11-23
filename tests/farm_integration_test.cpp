@@ -173,6 +173,23 @@ TEST(FarmIntegration, ResourcesAndRecordsSurviveLeavingAndReopening) {
   EXPECT_EQ(after.stone(), 12u);
 }
 
+TEST(FarmIntegration, OpeningTheFarmAgainTellsTheClientItsRestoredInventory) {
+  TestServer server(FarmConfig());
+  auto alice = ConnectLoggedIn(server, "alice_01");
+  const auto first = CreateRoom(*alice, "x");
+  ASSERT_EQ(first.result(), protocol::GAME_OK);
+  EXPECT_EQ(first.wood(), 0u) << "처음 여는 농장은 빈 인벤토리다";
+  EXPECT_EQ(first.stone(), 0u);
+  Collect(*alice, 25, 12);
+  ASSERT_EQ(LeaveRoom(*alice).result(), protocol::GAME_OK);
+  ASSERT_TRUE(WaitUntil([&] { return server.game_stats().current_rooms.load() == 0; }));
+
+  const auto again = CreateRoom(*alice, "x");  // 채집 응답을 기다리지 않아도 응답에 복원된 값이 있어야 HUD가 맞게 보인다
+  ASSERT_EQ(again.result(), protocol::GAME_OK);
+  EXPECT_EQ(again.wood(), 25u);
+  EXPECT_EQ(again.stone(), 12u);
+}
+
 TEST(FarmIntegration, RecordsPersistAcrossLogins) {
   TestServer server(FarmConfig());
   {
@@ -384,7 +401,9 @@ TEST(FarmIntegration, AFriendsInventoryIsRestoredWhenTheyJoinTheFarmAgain) {
   Collect(*bob, 5);
   ASSERT_EQ(LeaveRoom(*bob).result(), protocol::GAME_OK);
 
-  ASSERT_EQ(JoinRoom(*bob, code, "x").result(), protocol::GAME_OK);  // 농장은 alice 때문에 계속 열려 있다
+  const auto rejoined = JoinRoom(*bob, code, "x");  // 농장은 alice 때문에 계속 열려 있다
+  ASSERT_EQ(rejoined.result(), protocol::GAME_OK);
+  EXPECT_EQ(rejoined.wood(), 5u) << "입장 응답이 복원된 인벤토리를 알려 줘야 한다";
   const auto hit = Gather(*bob, 1);
   EXPECT_EQ(hit.wood(), 6u) << "방을 나갔다 다시 들어와도 인벤토리가 이어져야 한다";
 }

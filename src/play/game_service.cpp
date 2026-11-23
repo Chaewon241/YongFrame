@@ -278,6 +278,10 @@ void GameService::HandleJoinRoom(const std::shared_ptr<GameClient>& client,
   // 보내기 전에 필요한 것을 모두 만들어 둔다. 보내는 도중에 연결이 닫혀 방이 바뀔 수 있기 때문이다.
   response.set_result(protocol::GAME_OK);
   *response.mutable_state() = MakeRoomState(room, player_id);
+  if (const Member* me = room.FindByPlayer(player_id)) {  // 복원한 인벤토리를 알려 준다(HUD가 0으로 보이지 않게)
+    response.set_wood(me->wood);
+    response.set_stone(me->stone);
+  }
   protocol::RoomEvent event;
   event.set_kind(protocol::RoomEvent::PLAYER_JOINED);
   *event.mutable_player() = MakePlayerInfo(*room.FindByPlayer(player_id));
@@ -842,6 +846,10 @@ void GameService::FinishOpenFarm(const std::shared_ptr<GameClient>& client, cons
   protocol::CreateRoomResponse response;
   response.set_result(protocol::GAME_OK);
   *response.mutable_state() = MakeRoomState(*room, player_id);
+  if (const Member* me = room->FindByPlayer(player_id)) {  // 저장된 인벤토리를 알려 준다(HUD가 0으로 보이지 않게)
+    response.set_wood(me->wood);
+    response.set_stone(me->stone);
+  }
   std::vector<std::shared_ptr<GameClient>> others;
   protocol::RoomEvent event;
   if (!newly_opened) {

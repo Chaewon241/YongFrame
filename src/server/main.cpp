@@ -41,6 +41,8 @@ void PrintUsage(const char* program) {
             << "                              로그 레벨 (기본 debug: 요청 단위 로그 포함.\n"
             << "                              부하 실험에서는 info 이상으로 올려 요청 로그를 끈다)\n"
             << "  --stats-interval <초>       통계 출력 주기 (기본 10, 0이면 끔)\n"
+            << "  --stats-format <line|block> 통계 모양 (기본 line: 한 줄. block: 묶음마다 줄을 바꿔 읽기 쉽게.\n"
+            << "                              부하 측정은 line으로 한다)\n"
             << "  --max-send-queue-bytes <N>  연결당 송신 큐 한도 바이트 (기본 4194304)\n"
             << "  --tcp-nodelay <on|off>      TCP_NODELAY (기본 on: 작은 패킷도 바로 보냄)\n"
             << "  --io-threads <N>            소켓 입출력 전용 스레드 수 (기본 0: 게임 로직 스레드가 입출력도 함께 함.\n"
@@ -126,6 +128,11 @@ ParseResult ParseArgs(int argc, char** argv, game::server::ServerConfig& config,
         return ParseResult::kExitError;
       }
       config.stats_interval_seconds = static_cast<std::uint32_t>(number);
+    } else if (arg == "--stats-format") {
+      if (!game::server::ParseStatsFormat(value, config.stats_format)) {
+        std::cerr << "--stats-format은 line 또는 block이어야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
     } else if (arg == "--max-send-queue-bytes") {
       if (!ParseUnsigned(value, 1ull << 40, number) || number == 0) {
         std::cerr << "--max-send-queue-bytes는 1 이상의 숫자여야 합니다: " << value << "\n";
@@ -283,7 +290,7 @@ int main(int argc, char** argv) {
     // 현재는 스레드 1개로 돌린다. 스레드 수 비교는 3단계에서 한 번에 한 변수씩 실험한다.
     io.run();
 
-    game::server::Log(game::server::LogLevel::kInfo, "[통계] 최종 ", server.FullSummary());
+    game::server::Log(game::server::LogLevel::kInfo, "[통계] 최종 ", server.StatsReport());
     game::server::Log(game::server::LogLevel::kInfo, "[서버] 종료 완료");
   } catch (const std::exception& e) {
     // 주로 시작 단계의 실패 (포트 사용 중, 잘못된 주소 등)

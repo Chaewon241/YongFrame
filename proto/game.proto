@@ -86,6 +86,9 @@ message CreateRoomRequest { string nickname = 1; }
 message CreateRoomResponse {
   GameResult result = 1;
   RoomState state = 2;  // result가 GAME_OK일 때만 채워진다
+  // 들어간 직후의 내 인벤토리. 농장이면 예전에 저장된 값이 복원되어 있다(임시 방은 0).
+  uint32 wood = 3;
+  uint32 stone = 4;
 }
 
 message JoinRoomRequest {
@@ -95,6 +98,9 @@ message JoinRoomRequest {
 message JoinRoomResponse {
   GameResult result = 1;
   RoomState state = 2;  // result가 GAME_OK일 때만 채워진다
+  // 들어간 직후의 내 인벤토리. 농장이면 예전에 저장된 값이 복원되어 있다(임시 방은 0).
+  uint32 wood = 3;
+  uint32 stone = 4;
 }
 
 message LeaveRoomRequest {}

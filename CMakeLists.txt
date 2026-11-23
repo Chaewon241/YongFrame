@@ -172,7 +172,7 @@ apply_project_options(farm_mysql)
 
 # 서버 핵심 로직: 연결 하나를 다루는 Session과 연결을 받는 Server. 실행 파일과 분리해 두어
 # 나중에 통합 테스트가 같은 코드를 그대로 링크할 수 있다.
-add_library(server_core STATIC src/server/session.cpp src/server/server.cpp)
+add_library(server_core STATIC src/server/session.cpp src/server/server.cpp src/server/stats_format.cpp)
 target_include_directories(server_core PUBLIC src)
 target_link_libraries(server_core PUBLIC Boost::headers frame_codec game_proto chat_core play_core account_core common_util Threads::Threads)
 if(WIN32)
@@ -213,6 +213,12 @@ target_link_libraries(game_client PRIVATE client_core)
 apply_project_options(game_client)
 
 # 서버 통합 테스트: 테스트 프로세스 안에서 진짜 서버를 띄워 실제 TCP로 시나리오를 검증한다.
+# 통계 출력 모양(--stats-format block) 단위 시험: 소켓 없이 문자열만 본다.
+add_executable(stats_format_test tests/stats_format_test.cpp)
+target_link_libraries(stats_format_test PRIVATE server_core GTest::gtest_main)
+apply_project_options(stats_format_test)
+gtest_discover_tests(stats_format_test)
+
 add_executable(server_integration_test tests/server_integration_test.cpp)
 target_link_libraries(server_integration_test PRIVATE server_core client_core GTest::gtest_main)
 apply_project_options(server_integration_test)

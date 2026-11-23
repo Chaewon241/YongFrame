@@ -41,9 +41,9 @@
 | ID | 메시지 | 방향 | 설명 |
 | ---: | --- | --- | --- |
 | 100 | `CreateRoomRequest{nickname}` | C→S | 방을 만들고 방장이 된다 |
-| 101 | `CreateRoomResponse{result, state}` | S→C | 성공이면 방 코드, 내 player_id, 방 상태 |
+| 101 | `CreateRoomResponse{result, state, wood, stone}` | S→C | 성공이면 방 코드, 내 player_id, 방 상태, 들어간 직후의 내 인벤토리(농장이면 저장된 값이 복원되어 있고 임시 방은 0) |
 | 102 | `JoinRoomRequest{room_code, nickname}` | C→S | 코드로 입장 |
-| 103 | `JoinRoomResponse{result, state}` | S→C | 성공이면 방 상태(현재 접속자 포함) |
+| 103 | `JoinRoomResponse{result, state, wood, stone}` | S→C | 성공이면 방 상태(현재 접속자 포함)와 들어간 직후의 내 인벤토리 |
 | 104 | `LeaveRoomRequest{}` | C→S | 방에서 나간다 |
 | 105 | `LeaveRoomResponse{result}` | S→C | |
 | 106 | `MoveInput{sequence, dir_x, dir_y}` | C→S | 이동 방향(응답 없음). 방에 없으면 무시 |

@@ -88,8 +88,8 @@ build\windows-local\Release\game_server.exe --port 17777 --log-level debug --sta
 
 | ID | 메시지 | 방향 |
 | ---: | --- | --- |
-| 100 / 101 | `CreateRoomRequest{nickname}` / `CreateRoomResponse{result, state}` | C→S / S→C |
-| 102 / 103 | `JoinRoomRequest{room_code, nickname}` / `JoinRoomResponse{result, state}` | C→S / S→C |
+| 100 / 101 | `CreateRoomRequest{nickname}` / `CreateRoomResponse{result, state, wood, stone}` | C→S / S→C (`wood`, `stone`은 들어간 직후의 내 인벤토리. 농장이면 저장된 값, 아니면 0. 필드 추가라 기존 바이트와 호환) |
+| 102 / 103 | `JoinRoomRequest{room_code, nickname}` / `JoinRoomResponse{result, state, wood, stone}` | C→S / S→C |
 | 104 / 105 | `LeaveRoomRequest{}` / `LeaveRoomResponse{result}` | C→S / S→C |
 | 106 | `MoveInput{sequence, dir_x, dir_y}` (응답 없음) | C→S |
 | 110 | `RoomEvent{kind, player, host_player_id}` | S→C |
@@ -303,6 +303,60 @@ build\windows-local\Release\game_server.exe --port 18320 --log-level info --stat
 **시험(`GameClientSpike`):** `buildrules`(25건, 서버 불필요: 격자, 거리 경계 500 cm, 맵 경계, 구조물/노드/플레이어 겹침, 닿기만 하는 경계, 비용, 판정 순서), `build`(35건, 진짜 서버에 서브시스템 셋: 자원 없을 때 거부, **가까운 나무와 돌까지 실제로 걸어가 목재 20, 석재 10을 모으고**, 클라이언트가 지을 수 있다고 본 자리에 서버도 짓게 하는 판정 일치, 거부 코드(자원 부족, 겹침, 너무 멂), 정확한 비용 차감, 건설 중 → 약 5초 뒤 완공 알림, 집 한가운데로 걸어도 **몸이 발자국 안으로 들어가지 못함**, 늦은 입장자가 완공된 집을 받음, 나가면 비워지고 지은 사람이 나가도 집은 남음). 이 시험은 약 1분 걸린다. `ui`는 새 결과 문구 5개가 서로 다른지도 확인한다.
 
 **아직 시험하지 못한 것:** 구조물 액터와 미리보기의 모양, 건설 모드의 마우스 입력(땅 좌표 계산, 클릭), HUD 표시는 컴파일만 확인했다(월드와 창이 필요). 에디터 에셋과 PIE 확인은 MCP 작업 뒤에 사람이 한다.
+
+## 계정과 로그인 (Unreal)
+
+서버의 계정(가입, 로그인, 내 기록)과 농장 저장([persistence.md](persistence.md))을 쓰는 Unreal 쪽 구현이다. **C++ 구현과 커맨들릿 시험(S1), 에디터 에셋(S2)은 끝났고 사람의 PIE 확인(S3)은 진행 중이다.** S3에서 "농장을 다시 열면 HUD의 목재/석재가 0"을 발견했다. 서버는 인벤토리를 복원했는데 방 만들기/입장 응답에 그 값이 없어서, 클라이언트가 다음 채집 응답 전까지 0으로 보였다. 두 응답에 `wood`, `stone`을 더하고 `FGameClient`가 읽게 고쳤으며, `account` 모드에 "농장을 연 직후 채집 전에 목재 1" 검사를 넣었다(46건, 전체 15모드 실패 0).
+
+| 클래스 | 역할 |
+| --- | --- |
+| `FGameClient` | `Register`, `Login`, `RequestProfile`, 응답 이벤트(`OnRegisterResult`, `OnLoginResult`, `OnProfileResult`), 상태 `IsLoggedIn`/`GetProfile`. **로그인은 연결에 묶여 있다**: 직접 끊어도, 서버가 끊어도 로그아웃으로 돌아가고 기록이 비워진다. 결과 코드 `LoginRequired`, `StorageUnavailable`이 늘었다. 비밀번호를 로그에 남기거나 저장하지 않는다 |
+| `UYongNetSubsystem` | 블루프린트용 `Register`, `Login`, `RequestProfile`, `IsLoggedIn`, `GetProfile`과 이벤트(`OnRegisterResult`, `OnLoginResult`, `OnProfileResult`, C++용 `Native*`). 타입 `EYongAccountResult`, `FYongProfile`(누적 값은 `int64`) |
+| `YongUi::` 함수 | `CheckLoginName`(영문/숫자/밑줄 4~16자, 앞뒤 공백 제거), `CheckPassword`(**UTF-8 바이트 수 8~64**, 공백을 지우지 않음), `DescribeAccountResult`, `FormatProfile` 등 순수 함수. 서버도 같은 규칙으로 다시 검사한다 |
+| `UYongMenuWidget` | 로그인/가입/로그아웃 버튼 로직. 로그인하면 닉네임 칸이 계정 ID로 채워지고 읽기 전용이 되며, 방 만들기 버튼이 **내 농장 열기**로 바뀐다. 가입이 성공하면 같은 ID와 비밀번호로 바로 로그인한다(비밀번호는 응답이 올 때까지만 메모리에 두고 지운다). 로그인 응답이 오면 비밀번호 칸을 비운다. 로그인 실패가 5번이면 서버가 연결을 닫는데, 그때 "연결이 끊겼습니다" 문구가 "로그인 실패가 너무 많습니다" 안내를 덮지 않는다. 플레이에서 메뉴로 돌아오면 로그인 상태가 그대로 남아 있다(연결이 유지됨) |
+| `UYongHudWidget` | 선택 위젯 `RecordText`: 로그인했으면 `ID  누적 목재 N / 석재 N / 지은 집 N`, 게스트면 "기록은 저장되지 않음". 채집/건설이 성공하면 서버에 기록을 다시 묻는다(서버는 메모리 값으로 바로 답한다) |
+
+**게스트는 그대로다.** 로그인하지 않고 닉네임만으로 임시 방을 만들고 코드로 입장하는 흐름은 바뀌지 않았다. 게스트가 농장 코드로 입장하면 "농장에는 로그인한 사람만..." 문구가 나온다(`LoginRequired`). **비밀번호는 서버로 평문 전송된다(TLS 없음).**
+
+**위젯 이름 규약(전부 선택, 없으면 그 기능만 건너뛴다)**
+
+| 위젯 블루프린트 | 이름: 타입 | 용도 |
+| --- | --- | --- |
+| `WBP_MainMenu` | `LoginNameBox`: EditableTextBox | ID 입력 |
+| | `PasswordBox`: EditableTextBox | 비밀번호 입력(코드가 입력을 가리도록 `SetIsPassword(true)`를 직접 건다) |
+| | `LoginButton`, `RegisterButton`, `LogoutButton`: Button | 로그인, 가입(성공하면 바로 로그인), 로그아웃(연결 끊기) |
+| | `AccountText`: TextBlock | "게스트 (...)" 또는 로그인한 계정과 누적 기록 |
+| | `CreateButtonLabel`: TextBlock | `CreateButton` 안의 글자. 코드가 "방 만들기" / "내 농장 열기"로 바꾼다 |
+| `WBP_HUD` | `RecordText`: TextBlock | 내 누적 기록 |
+
+**시험(`GameClientSpike`, 에디터를 닫고 실행. 서버는 모드마다 새로 띄운다)**
+
+| 모드 | 상대 | 내용 |
+| --- | --- | --- |
+| `ui` (42건, 서버 불필요) | 없음 | ID 규칙(길이 경계, 한글, 공백, 글자 오류가 길이 오류보다 먼저), 비밀번호 규칙(**한글은 글자 수가 아니라 바이트 수**, 공백 보존), 계정 결과 문구 12가지가 서로 다름, 기록 표시(32비트를 넘는 값 포함) |
+| `account` (45건) | 진짜 서버 | 가입 거부 2종과 성공과 대소문자만 다른 중복, 틀린 비밀번호와 없는 ID가 같은 응답, 로그인과 소문자 ID와 0으로 시작한 기록, 같은 연결의 두 번째 로그인과 같은 계정의 다른 연결 로그인 거부, **로그인한 사람의 방 만들기 = 농장 열기(닉네임은 계정 ID)**, 게스트의 농장 입장 `LoginRequired`, **실제로 걸어가 나무를 쳐 누적 기록이 바로 1**, 나가고 연결을 끊으면 로그아웃, **새 연결로 다시 로그인하면 누적 기록과 같은 농장 코드와 인벤토리(1 + 1 = 2)가 이어짐**, 로그인 실패 5번이면 `TooManyAttempts`가 도착한 뒤 서버가 연결을 닫음, 게스트는 임시 방을 그대로 만듦 |
+| `subsystem-account` (11건) | 진짜 서버 | 서브시스템의 가입/로그인/기록 이벤트와 상태, 다른 서브시스템의 중복 로그인 거부, 농장 닉네임, 게스트 입장 `LoginRequired`, 끊으면 로그아웃 |
+| `garbage-login` (7건) | `Tools/fake_server.py <포트> garbage-login` | 해석할 수 없는 로그인 응답은 프로토콜 오류로 연결을 끊고 한 번만 알림 |
+| `login-fake` (5건) | `Tools/fake_server.py <포트> login-garbage` | 로그인에 성공한 뒤 서버의 깨진 메시지로 끊기면 로그인 상태와 기록이 비워짐 |
+
+기존 모드(`interp` 21, `real` 53, `subsystem` 19, `gather` 40, `subsystem-gather` 25, `buildrules` 29, `build` 39, `garbage` 7, `fake` 7, `subsystem-fake` 6)도 모두 다시 통과했다. 판정은 로그의 `[통과]/[실패]` 줄과 마지막 `결과:` 줄이다(종료 코드는 `AllToolsets` 플러그인 때문에 항상 1).
+
+**알려진 시험의 약점:** `subsystem` 모드의 보간 시험("샘플 50개 이상", "샘플 간 최대 이동 6 cm 미만")은 4 ms 간격으로 읽는 시간에 기대므로 **PC에 부하가 있으면 실패한다.** 이 계정 작업을 마친 직후의 마지막 실행에서 그 두 항목이 실패했고(샘플 42개, 최대 이동 6.84 cm), 같은 시각에 PC에서 게임 클라이언트가 돌고 있었으며 종료되지 않은 `find.exe`가 코어 하나를 쓰고 있었다. 보간 코드는 이번에 바꾸지 않았고 부하가 없던 앞선 전체 실행에서는 19건 모두 통과했다. 인벤토리 응답을 고친 뒤 부하가 없을 때 전체 15모드를 다시 돌렸고 `subsystem`도 19건 모두 통과했다. 시험이 시간에 기대는 약점 자체는 그대로다.
+
+**변형 검증 21가지를 모두 잡았다**: 결과 코드 매핑 5가지(틀린 비밀번호, 로그인 실패 초과, 농장 입장 거부, 서브시스템의 중복 로그인), 직접 끊어도/서버가 끊어도 로그인이 풀리는 것, 로그인 표시 누락, 로그인 요청에 비밀번호를 이름으로 보냄, 기록의 목재와 석재 뒤바뀜, 기록 응답을 저장하지 않음, 가입이 로그인 메시지 ID를 씀, ID 길이 경계와 공백 제거와 글자 검사, 비밀번호를 글자 수로 셈, 비밀번호 최대 길이 경계, 기록 표시 문장의 값 뒤바뀜, 결과 문구 중복, 서브시스템이 로그인 이벤트를 전달하지 않음, 깨진 로그인 응답을 프로토콜 오류로 처리하지 않음. **처음에는 "서버가 끊었을 때 로그인이 풀리는지"를 잡는 시험이 없어서** 가짜 서버로 로그인에 성공한 뒤 깨진 메시지를 보내는 `login-fake` 모드를 추가했다. 결과 문구 중복 변형은 처음 만든 것이 컴파일되지 않아(도달할 수 없는 코드) 고쳐서 다시 확인했다.
+
+**에디터 쪽(S2, 완료)**: MCP로 추가했다. 메뉴는 제목 아래에 `LoginNameBox`, `PasswordBox`, 버튼 줄(`AuthRow` HorizontalBox 안에 같은 폭으로 로그인/가입/로그아웃), `AccountText` 순이고, 메뉴 상자는 화면 세로 중앙(높이 600)이다(처음에 위로 올려 위쪽이 잘렸던 것을 고쳤다). HUD는 `RecordText`를 방 코드와 플레이어 목록 아래에 두었다. 위젯 트리를 다시 조회해 이름, 타입, 변수 여부를 확인했다(`BindWidgetOptional`은 없어도 컴파일되기 때문). 원래 지시: 위 표의 위젯을 `WBP_MainMenu`와 `WBP_HUD`에 추가하고 이름과 타입을 **그대로** 맞춘다(`PasswordBox`는 Is Password도 켜 둔다). 배치 예: 메뉴 위쪽에 계정 줄(`AccountText`), 그 아래 `LoginNameBox`와 `PasswordBox`, 그 아래 `LoginButton`/`RegisterButton`/`LogoutButton`. `CreateButton` 안의 기존 글자를 `CreateButtonLabel`로 이름 붙이고 "변수로 만들기"를 켠다. 끝나면 블루프린트를 컴파일해 오류가 없는지 확인하고 저장한다(Content는 Git LFS).
+
+**사람이 확인할 것(S3)**
+1. 서버를 켠다: `game_server.exe --port 7777 --log-level info`(DB 없이 메모리).
+2. 에디터에서 `L_Menu`로 플레이하고(Number of Players 2, Play Standalone) 창 1에서 ID와 비밀번호를 넣고 **가입**한다. 바로 로그인되어 계정 줄이 바뀌고 닉네임 칸이 읽기 전용이 되며 버튼 글자가 "내 농장 열기"로 바뀌는지.
+3. **내 농장 열기**로 들어가 `E`로 채집하고, HUD의 `RecordText`가 늘어나는지. 집을 지으면 지은 집 수가 늘어나는지.
+4. 창 2에서 **게스트**(닉네임만)로 창 1의 방 코드를 입력해 입장하면 "농장에는 로그인한 사람만..." 문구가 나오는지. 창 2에서 닉네임만으로 임시 방을 만드는 것은 되는지.
+5. 틀린 비밀번호로 로그인을 5번 시도하면 "로그인 실패가 너무 많습니다" 문구가 남고 서버가 연결을 닫는지.
+6. 창 1에서 나가기로 메뉴로 돌아오면 로그인이 그대로인지, **로그아웃**하면 게스트 상태로 돌아가는지.
+7. 저장까지 보려면 서버를 `--storage mysql`로(계정과 농장이 DB에 남는다) 켜고 같은 계정으로 다시 로그인했을 때 집과 인벤토리와 누적 기록이 그대로인지(MySQL이 필요하고 비밀번호는 환경변수로 준다).
+
+**한계:** 메뉴/HUD 위젯 로직(버튼 클릭, 입력칸 갱신)은 월드와 창이 필요해 **컴파일까지만 확인했고 자동 시험은 없다**(사람이 PIE로 확인한다). 비밀번호는 평문으로 전송된다. 가입 직후 자동 로그인에 쓰는 비밀번호 보관은 응답이 올 때까지로 제한했지만 입력칸이 비워지기 전의 메모리 노출은 막지 못한다.
 
 ## Unreal MCP (Epic 제공, 5.8)
 

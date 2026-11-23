@@ -33,6 +33,7 @@
 #include "play/game_service.h"
 #include "server/session.h"
 #include "server/stats.h"
+#include "server/stats_format.h"
 
 namespace game::server {
 
@@ -45,6 +46,8 @@ struct ServerConfig {
   play::PlayConfig play;
   account::AccountServiceOptions account;  // 해시 일꾼 수, 대기 상한, 로그인 실패 한도
   std::uint32_t stats_interval_seconds = 10;  // 0이면 주기 통계 출력을 끈다.
+  // 통계 출력 모양. 기본은 한 줄(부하 측정 기록이 이 형식을 시각으로 잘라 읽는다). block은 묶음마다 줄을 바꾼다.
+  StatsFormat stats_format = StatsFormat::kLine;
 
   // 소켓 읽기/쓰기를 맡을 입출력 스레드 수. 0이면 따로 두지 않고 Server에 넘긴 io_context(논리 스레드)가
   // 입출력도 함께 한다(예전과 같은 단일 스레드 동작). N이면 N개 스레드가 연결별 strand로 소켓 입출력을 하고,
@@ -92,6 +95,9 @@ class Server {
 
   // 서버 통계와 채팅 통계를 한 줄로 합친 문자열. 주기 출력과 종료 시 출력에 쓴다.
   std::string FullSummary() const;
+
+  // 로그에 남길 통계 본문. 설정(stats_format)이 block이면 줄을 바꿔 묶음별로 보여 준다.
+  std::string StatsReport() const;
 
  private:
   void DoAccept();
