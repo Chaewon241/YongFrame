@@ -23,7 +23,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/protocol-chat.md](docs/protocol-chat.md) | 2단계 채팅 메시지, 입력 규칙, 상태 규칙, 저장 정책 (초안) |
 | [docs/stage2.md](docs/stage2.md) | 2단계 결정 기록, 작업 순서와 진행 상태, MySQL 준비 방법 |
 | [docs/stage3.md](docs/stage3.md) | 3단계 측정 계획과 합격 기준(측정 전 확정), 진행 상태, 측정 도구에서 겪은 문제 |
-| [docs/game-plan.md](docs/game-plan.md) | 4단계 게임 기획 초안(1~4인 협동 농장, Unreal 클라이언트), 서버 영향, 미정 사항 |
+| [docs/game-plan.md](docs/game-plan.md) | 게임 기획(스타듀밸리 풍 1~4인 협동 농장): 하루 루프와 밤 정산, 농사, 출하/상점, 제작/도구 강화, 기본값, 넣지 않는 것, 열린 결정 |
 | [docs/stage4.md](docs/stage4.md) | 4단계 게임 서버: 범위, 프로토콜(ID 100~111), 기본값, 완료 기준, 검증 결과, 겪은 문제, 제한 |
 | [docs/stage4-gather.md](docs/stage4-gather.md) | 4단계 확장 1(자원 채집) 설계: 범위, 프로토콜(ID 107/108/112), 기본값, 완료 기준, 서버·Unreal 설계, MCP 작업 목록 (구현 전) |
 | [docs/content-roadmap.md](docs/content-roadmap.md) | 채집 이후 콘텐츠 로드맵(집 짓기 → 하루 → 농사 → 경제 → 저장)과 첫 조각(집 짓기, 이동 충돌 포함) 설계. 구현 전 계획 |
