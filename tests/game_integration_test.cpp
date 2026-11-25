@@ -354,7 +354,8 @@ TEST_P(BadGamePayloadTest, UnparsableRequestClosesTheConnection) {
 INSTANTIATE_TEST_SUITE_P(Ids, BadGamePayloadTest,
                          ::testing::Values(MessageId::kCreateRoomRequest, MessageId::kJoinRoomRequest,
                                            MessageId::kLeaveRoomRequest, MessageId::kMoveInput,
-                                           MessageId::kGatherRequest, MessageId::kBuildRequest));
+                                           MessageId::kGatherRequest, MessageId::kBuildRequest,
+                                           MessageId::kSleepRequest));
 
 // 서버가 보내는 쪽 메시지를 클라이언트가 보내면 알 수 없는 ID와 똑같이 연결을 닫는다.
 class GameServerOnlyIdTest : public ::testing::TestWithParam<MessageId> {};
@@ -373,18 +374,20 @@ INSTANTIATE_TEST_SUITE_P(Ids, GameServerOnlyIdTest,
                                            MessageId::kLeaveRoomResponse, MessageId::kRoomEvent,
                                            MessageId::kWorldSnapshot, MessageId::kGatherResponse,
                                            MessageId::kResourceUpdate, MessageId::kBuildResponse,
-                                           MessageId::kStructureUpdate));
+                                           MessageId::kStructureUpdate, MessageId::kSleepResponse,
+                                           MessageId::kSleepUpdate, MessageId::kDayStarted));
 
 // ============================================================ 집 짓기와 이동 충돌 (docs/content-roadmap.md)
 
-// 자원을 빨리 모을 수 있고(쿨다운 없음, 체력 넉넉) 건설이 빨리 끝나는 서버.
-server::ServerConfig BuildServerConfig(std::uint32_t build_ticks = 10) {
+// 자원을 빨리 모을 수 있는(쿨다운 없음, 체력 넉넉) 서버. bench_day_ticks를 주면 하루가 그만큼 짧아 밤 정산(완공)이 빨리 온다.
+// 0이면 기본 하루(10분)라 시험 중에는 밤이 오지 않는다(아침 위치로 옮겨지지 않는다).
+server::ServerConfig BuildServerConfig(std::uint32_t bench_day_ticks = 0) {
   server::ServerConfig config = DefaultServerConfig();
   config.play.gather_range_cm = 100000.0f;
   config.play.gather_cooldown_ticks = 0;
   config.play.tree_hp = 1000;
   config.play.rock_hp = 1000;
-  config.play.build_ticks = build_ticks;
+  config.play.bench_day_ticks = bench_day_ticks;
   return config;
 }
 
@@ -394,14 +397,14 @@ void Equip(BlockingClient& client, int wood = 20, int stone = 10) {
   for (int i = 0; i < stone; ++i) ASSERT_EQ(Gather(client, 31).result(), protocol::GAME_OK);
 }
 
-TEST(GameIntegration, BuildingOverTcpTellsTheRoomAndLateJoinersAndCompletes) {
-  TestServer server(BuildServerConfig());
+TEST(GameIntegration, BuildingOverTcpTellsTheRoomAndLateJoinersAndCompletesAtTheNight) {
+  TestServer server(BuildServerConfig(/*bench_day_ticks=*/20));  // 1초마다 밤 정산
   std::string code;
   auto alice = CreateRoomPlayer(server, "alice", &code);
   auto bob = JoinRoomPlayer(server, code, "bob");
   Equip(*alice.client);
 
-  const auto built = Build(*alice.client, 2400.0f, 2800.0f);
+  const auto built = Build(*alice.client, 2400.0f, 2000.0f);
   ASSERT_EQ(built.result(), protocol::GAME_OK);
   EXPECT_EQ(built.structure_id(), 1u);
   EXPECT_EQ(built.wood(), 0u);
@@ -415,10 +418,12 @@ TEST(GameIntegration, BuildingOverTcpTellsTheRoomAndLateJoinersAndCompletes) {
   };
   EXPECT_TRUE(WaitStructureUpdate(*alice.client, update, is_state(protocol::STRUCTURE_BUILDING))) << "짓는 본인도 알림";
   EXPECT_EQ(update.structures(0).x(), 2400.0f);
-  EXPECT_EQ(update.structures(0).y(), 2800.0f);
+  EXPECT_EQ(update.structures(0).y(), 2000.0f);
   EXPECT_EQ(update.structures(0).width(), 300.0f);
+  EXPECT_EQ(update.structures(0).ready_tick(), 0u) << "건설 중이면 0";
   EXPECT_TRUE(WaitStructureUpdate(*bob.client, update, is_state(protocol::STRUCTURE_BUILDING)));
-  EXPECT_TRUE(WaitStructureUpdate(*alice.client, update, is_state(protocol::STRUCTURE_COMPLETE))) << "실제 타이머로 완공";
+  EXPECT_TRUE(WaitStructureUpdate(*alice.client, update, is_state(protocol::STRUCTURE_COMPLETE), Millis(5000)))
+      << "실제 타이머의 밤 정산으로 완공";
   EXPECT_TRUE(WaitStructureUpdate(*bob.client, update, is_state(protocol::STRUCTURE_COMPLETE)));
 
   auto carol = Connect(server);
@@ -433,12 +438,12 @@ TEST(GameIntegration, BuildingOverTcpTellsTheRoomAndLateJoinersAndCompletes) {
 TEST(GameIntegration, BuildRejectionsKeepTheConnectionAndTheInventory) {
   TestServer server(BuildServerConfig());
   auto alice = CreateRoomPlayer(server, "alice", nullptr);
-  EXPECT_EQ(Build(*alice.client, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_ENOUGH_RESOURCES);
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2000.0f).result(), protocol::GAME_NOT_ENOUGH_RESOURCES);
   Equip(*alice.client);
-  EXPECT_EQ(Build(*alice.client, 2400.0f, 2800.0f, 9).result(), protocol::GAME_BUILD_INVALID_TYPE);
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2000.0f, 9).result(), protocol::GAME_BUILD_INVALID_TYPE);
   EXPECT_EQ(Build(*alice.client, 2400.0f, 2400.0f).result(), protocol::GAME_BUILD_BLOCKED) << "내 몸 위";
   EXPECT_EQ(Build(*alice.client, 4000.0f, 4000.0f).result(), protocol::GAME_BUILD_TOO_FAR);
-  const auto ok = Build(*alice.client, 2400.0f, 2800.0f);
+  const auto ok = Build(*alice.client, 2400.0f, 2000.0f);
   EXPECT_EQ(ok.result(), protocol::GAME_OK) << "거부된 것들은 아무것도 바꾸지 않았다";
   EXPECT_EQ(ok.wood(), 0u);
   EXPECT_TRUE(PingWorksInGame(*alice.client));
@@ -452,37 +457,37 @@ TEST(GameIntegration, BuildingOutsideTheZoneIsRejectedOverTcp) {
   auto alice = CreateRoomPlayer(server, "alice", nullptr);
   Equip(*alice.client);
   EXPECT_EQ(Build(*alice.client, 500.0f, 500.0f).result(), protocol::GAME_BUILD_OUT_OF_ZONE);
-  EXPECT_EQ(Build(*alice.client, 2400.0f, 2800.0f).result(), protocol::GAME_OK) << "구역 안은 지을 수 있다";
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2000.0f).result(), protocol::GAME_OK) << "구역 안은 지을 수 있다";
   EXPECT_TRUE(PingWorksInGame(*alice.client));
 }
 
 TEST(GameIntegration, BuildingOutsideARoomIsRejectedWithoutClosingTheConnection) {
   TestServer server;
   auto client = Connect(server);
-  EXPECT_EQ(Build(*client, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_EQ(Build(*client, 2400.0f, 2000.0f).result(), protocol::GAME_NOT_IN_ROOM);
   EXPECT_TRUE(ServerStillWorks(server));
 }
 
-// 서버 판정 이동이 건물에 막힌다: 스냅샷의 y가 벽(2650) - 몸 반지름(40) = 2610을 넘지 않는다.
+// 서버 판정 이동이 건물에 막힌다: 스냅샷의 y가 벽(2150) + 몸 반지름(40) = 2190 아래로 내려가지 않는다.
 TEST(GameIntegration, APlayerWalkingIntoABuiltHouseIsStoppedByTheServer) {
   TestServer server(BuildServerConfig());
   auto alice = CreateRoomPlayer(server, "alice", nullptr);
   Equip(*alice.client);
-  ASSERT_EQ(Build(*alice.client, 2400.0f, 2800.0f).result(), protocol::GAME_OK);  // y 2650~2950
+  ASSERT_EQ(Build(*alice.client, 2400.0f, 2000.0f).result(), protocol::GAME_OK);  // y 1850~2150
 
-  ASSERT_TRUE(SendMove(*alice.client, 1, 0.0f, 1.0f));
+  ASSERT_TRUE(SendMove(*alice.client, 1, 0.0f, -1.0f));
   protocol::WorldSnapshot snapshot;
-  float max_y = 0.0f;
+  float min_y = 1.0e9f;
   int near_wall = 0;
   const bool done = WaitSnapshot(*alice.client, snapshot, [&](const protocol::WorldSnapshot& s) {
     const auto* me = FindPlayer(s, 1);
     if (me == nullptr) return false;
-    max_y = std::max(max_y, me->y());
-    near_wall = me->y() > 2600.0f ? near_wall + 1 : 0;
+    min_y = std::min(min_y, me->y());
+    near_wall = me->y() < 2200.0f ? near_wall + 1 : 0;
     return near_wall >= 10;  // 벽에 닿은 채로 10개의 스냅샷(0.5초) 동안 머문다
   }, Millis(6000));
-  EXPECT_TRUE(done) << "벽까지 걸어가서 멈춘다(max y " << max_y << ")";
-  EXPECT_LE(max_y, 2610.01f) << "서버가 벽을 뚫고 지나가는 것을 허용하지 않는다";
+  EXPECT_TRUE(done) << "벽까지 걸어가서 멈춘다(min y " << min_y << ")";
+  EXPECT_GE(min_y, 2189.99f) << "서버가 벽을 뚫고 지나가는 것을 허용하지 않는다";
 }
 
 TEST(GameIntegration, TheTickKeepsRunningWhileAPlayerPushesAgainstAWallAndAnotherLeaves) {
@@ -492,8 +497,8 @@ TEST(GameIntegration, TheTickKeepsRunningWhileAPlayerPushesAgainstAWallAndAnothe
   {
     auto bob = JoinRoomPlayer(server, code, "bob");
     Equip(*bob.client);
-    ASSERT_EQ(Build(*bob.client, 2600.0f, 2900.0f).result(), protocol::GAME_OK);
-    ASSERT_TRUE(SendMove(*alice.client, 1, 0.5f, 1.0f));
+    ASSERT_EQ(Build(*bob.client, 2600.0f, 2000.0f).result(), protocol::GAME_OK);
+    ASSERT_TRUE(SendMove(*alice.client, 1, 0.5f, -1.0f));
   }  // bob의 연결이 갑자기 닫힌다
   protocol::WorldSnapshot snapshot;
   EXPECT_TRUE(WaitSnapshot(*alice.client, snapshot, [](const protocol::WorldSnapshot& s) { return s.tick() > 40; }));
@@ -503,11 +508,12 @@ TEST(GameIntegration, TheTickKeepsRunningWhileAPlayerPushesAgainstAWallAndAnothe
 // ============================================================ 자원 채집 (docs/stage4-gather.md)
 
 // 허용 거리를 맵 전체보다 크게 해서 시작 위치에서 어느 노드든 칠 수 있게 한 서버.
-server::ServerConfig GatherServerConfig(std::uint32_t tree_hp = 5, std::uint32_t respawn_ticks = 600) {
+// bench_day_ticks를 주면 하루가 그만큼 짧아 밤 정산(재생)이 빨리 온다.
+server::ServerConfig GatherServerConfig(std::uint32_t tree_hp = 5, std::uint32_t bench_day_ticks = 0) {
   server::ServerConfig config = DefaultServerConfig();
   config.play.gather_range_cm = 100000.0f;
   config.play.tree_hp = tree_hp;
-  config.play.respawn_ticks = respawn_ticks;
+  config.play.bench_day_ticks = bench_day_ticks;
   return config;
 }
 
@@ -567,8 +573,8 @@ TEST(GameIntegration, GatheringOutsideARoomIsRejectedWithoutClosingTheConnection
   EXPECT_TRUE(client->SendPing(1, "x"));
 }
 
-TEST(GameIntegration, ADepletedNodeRespawnsOnTheRealTimerAndTheRoomIsTold) {
-  TestServer server(GatherServerConfig(/*tree_hp=*/1, /*respawn_ticks=*/10));  // 10틱 = 0.5초
+TEST(GameIntegration, ADepletedNodeRespawnsAtTheNightOnTheRealTimerAndTheRoomIsTold) {
+  TestServer server(GatherServerConfig(/*tree_hp=*/1, /*bench_day_ticks=*/10));  // 0.5초마다 밤 정산
   auto alice = CreateRoomPlayer(server, "alice", nullptr);
   ASSERT_EQ(Gather(*alice.client, 1).result(), protocol::GAME_OK);
 
@@ -595,6 +601,111 @@ TEST(GameIntegration, GatheringFlowsSurviveAnAbruptDisconnectOfAnotherPlayer) {
   EXPECT_TRUE(WaitResourceUpdate(*alice.client, update, [](const protocol::ResourceUpdate& u) {
     return u.nodes_size() >= 1;
   }));
+  EXPECT_TRUE(ServerStillWorks(server));
+}
+
+// ============================================================ 하루와 잠 (docs/content-day.md)
+
+// 어디서든 잘 수 있게 한 서버(잠 거리는 단위 시험이 따로 본다). bench_day_ticks를 주면 하루가 그만큼 짧다.
+server::ServerConfig DayServerConfig(std::uint32_t bench_day_ticks = 0) {
+  server::ServerConfig config = DefaultServerConfig();
+  config.play.sleep_range_cm = 100000.0f;
+  config.play.bench_day_ticks = bench_day_ticks;
+  return config;
+}
+
+TEST(GameIntegration, WhenEveryoneSleepsOverTcpTheNextDayStartsWithDayStartedBeforeTheSnapshot) {
+  TestServer server(DayServerConfig());
+  std::string code;
+  auto alice = CreateRoomPlayer(server, "alice", &code);
+  auto bob = JoinRoomPlayer(server, code, "bob");
+
+  const auto slept = Sleep(*alice.client, true);
+  ASSERT_EQ(slept.result(), protocol::GAME_OK);
+  EXPECT_TRUE(slept.sleeping());
+  protocol::SleepUpdate sleepers;
+  ASSERT_TRUE(WaitMessage<protocol::SleepUpdate>(*bob.client, MessageId::kSleepUpdate, sleepers,
+                                                 [&](const protocol::SleepUpdate& u) {
+                                                   return u.sleeping_player_ids_size() == 1 &&
+                                                          u.sleeping_player_ids(0) == alice.id;
+                                                 }))
+      << "다른 사람도 잠든 사람 목록을 받는다";
+  EXPECT_EQ(server.game_stats().days_started.load(), 0u) << "한 명이 깨어 있다";
+
+  ASSERT_EQ(Sleep(*bob.client, true).result(), protocol::GAME_OK);
+  for (auto* player : {&alice, &bob}) {
+    std::vector<std::uint16_t> seen;
+    protocol::DayStarted night;
+    ASSERT_TRUE(WaitMessage<protocol::DayStarted>(*player->client, MessageId::kDayStarted, night,
+                                                  [](const protocol::DayStarted&) { return true; }, Millis(3000), &seen));
+    EXPECT_FALSE(night.forced());
+    EXPECT_EQ(night.clock().day(), 2u);
+    EXPECT_EQ(night.clock().day_start_tick(), static_cast<std::int64_t>(night.tick()));
+    protocol::Frame next;
+    ASSERT_EQ(player->client->ReceiveFrame(next, Millis(1000)), Status::kFrame);
+    EXPECT_EQ(next.message_id, protocol::ToUint16(MessageId::kWorldSnapshot)) << "DayStarted 바로 뒤에 아침 스냅샷";
+    protocol::WorldSnapshot morning;
+    ASSERT_TRUE(morning.ParseFromArray(next.payload.data(), static_cast<int>(next.payload.size())));
+    EXPECT_EQ(morning.tick(), night.tick());
+  }
+  EXPECT_EQ(server.game_stats().days_started.load(), 1u);
+
+  // 늦게 들어온 사람은 방 상태로 시계, 시작 집, 잠든 사람을 받는다.
+  auto carol = Connect(server);
+  const auto joined = JoinRoom(*carol, code, "carol");
+  ASSERT_EQ(joined.result(), protocol::GAME_OK);
+  EXPECT_EQ(joined.state().clock().day(), 2u);
+  EXPECT_EQ(joined.state().landmarks_size(), 1);
+  EXPECT_EQ(joined.state().sleeping_player_ids_size(), 0) << "밤 정산 뒤에는 모두 깨어 있다";
+  EXPECT_TRUE(PingWorksInGame(*alice.client));
+}
+
+TEST(GameIntegration, TheForcedNightComesOnTheRealTimer) {
+  TestServer server(DayServerConfig(/*bench_day_ticks=*/10));  // 0.5초
+  auto alice = CreateRoomPlayer(server, "alice", nullptr);
+  protocol::DayStarted night;
+  ASSERT_TRUE(WaitMessage<protocol::DayStarted>(*alice.client, MessageId::kDayStarted, night,
+                                                [](const protocol::DayStarted& d) { return d.clock().day() >= 3; },
+                                                Millis(5000)));
+  EXPECT_TRUE(night.forced());
+  EXPECT_EQ(night.clock().day_length_ticks(), 10u);
+  EXPECT_TRUE(PingWorksInGame(*alice.client));
+}
+
+TEST(GameIntegration, SleepingOutsideARoomOrWhileAsleepIsRejectedWithoutClosingTheConnection) {
+  TestServer server(DayServerConfig());
+  auto loner = Connect(server);
+  EXPECT_EQ(Sleep(*loner, true).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_TRUE(loner->SendPing(1, "x"));
+
+  std::string code;
+  auto alice = CreateRoomPlayer(server, "alice", &code);
+  auto bob = JoinRoomPlayer(server, code, "bob");  // 깨어 있어 밤이 오지 않는다
+  ASSERT_EQ(Sleep(*alice.client, true).result(), protocol::GAME_OK);
+  EXPECT_EQ(Gather(*alice.client, 1).result(), protocol::GAME_SLEEPING);
+  EXPECT_EQ(Build(*alice.client, 2400.0f, 2000.0f).result(), protocol::GAME_SLEEPING);
+  ASSERT_TRUE(SendMove(*alice.client, 1, 1.0f, 0.0f));  // 무시된다
+  EXPECT_TRUE(WaitUntil([&] { return server.game_stats().inputs_ignored.load() == 1; }));
+  EXPECT_TRUE(PingWorksInGame(*alice.client));
+}
+
+TEST(GameIntegration, ASleeperWhoDisconnectsAbruptlyDoesNotBreakTheRoom) {
+  TestServer server(DayServerConfig());
+  std::string code;
+  auto alice = CreateRoomPlayer(server, "alice", &code);
+  {
+    auto bob = JoinRoomPlayer(server, code, "bob");
+    ASSERT_EQ(Sleep(*bob.client, true).result(), protocol::GAME_OK);
+    protocol::SleepUpdate asleep;
+    ASSERT_TRUE(WaitMessage<protocol::SleepUpdate>(*alice.client, MessageId::kSleepUpdate, asleep,
+                                                   [](const protocol::SleepUpdate& u) { return u.sleeping_player_ids_size() == 1; }))
+        << "먼저 bob이 잠든 것이 알려진다(틱 사이에 자고 끊기면 목록이 바뀌지 않은 것이라 알림이 없다)";
+  }  // bob이 잠든 채 연결이 닫힌다
+  protocol::SleepUpdate update;
+  EXPECT_TRUE(WaitMessage<protocol::SleepUpdate>(*alice.client, MessageId::kSleepUpdate, update,
+                                                 [](const protocol::SleepUpdate& u) { return u.sleeping_player_ids_size() == 0; }))
+      << "잠든 사람이 나가면 목록이 비었다고 알린다";
+  EXPECT_EQ(server.game_stats().days_started.load(), 0u) << "남은 alice는 깨어 있다";
   EXPECT_TRUE(ServerStillWorks(server));
 }
 

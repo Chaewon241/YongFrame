@@ -227,6 +227,7 @@ void Session::HandleFrame(const protocol::Frame& frame) {
     case protocol::MessageId::kMoveInput:
     case protocol::MessageId::kGatherRequest:
     case protocol::MessageId::kBuildRequest:
+    case protocol::MessageId::kSleepRequest:
       HandleGameFrame(frame);
       return;
     case protocol::MessageId::kRegisterRequest:
@@ -338,6 +339,14 @@ void Session::HandleGameFrame(const protocol::Frame& frame) {
       if (ParsePayload(frame, request, "BuildRequest")) {
         Log(LogLevel::kDebug, "[건설요청] id=", id_);
         game_.HandleBuild(self, request);
+      }
+      return;
+    }
+    case protocol::MessageId::kSleepRequest: {
+      game::protocol::SleepRequest request;
+      if (ParsePayload(frame, request, "SleepRequest")) {
+        Log(LogLevel::kDebug, "[잠요청] id=", id_, " sleep=", request.sleep() ? 1 : 0);
+        game_.HandleSleep(self, request);
       }
       return;
     }

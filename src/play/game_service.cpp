@@ -78,7 +78,10 @@ std::string GameStats::Summary() const {
       << " 완공=" << structures_completed.load()
       << " 농장열림=" << farms_opened.load() << " 농장열기실패=" << farm_open_failures.load()
       << " 틱시간{이동=" << tick_us_step.load() << " 갱신=" << tick_us_update.load() << " 구성=" << tick_us_build.load()
-      << " 전송=" << tick_us_deliver.load() << " 합=" << tick_us_total.load() << "}";
+      << " 전송=" << tick_us_deliver.load() << " 합=" << tick_us_total.load() << "}"
+      << " 하루{정산=" << days_started.load() << " 강제=" << forced_nights.load() << " 정산시간=" << night_us.load()
+      << "us 최대정산=" << max_night_micros.load() << "us 잠=" << sleeps_ok.load() << " 잠거부=" << sleeps_rejected.load()
+      << "}";
   return out.str();
 }
 
@@ -154,7 +157,29 @@ protocol::RoomState GameService::MakeRoomState(const Room& room, std::uint32_t y
   for (const Structure& structure : room.structures().structures()) {
     *state.add_structures() = MakeStructure(structure);
   }
+  *state.mutable_clock() = MakeDayClock(room);
+  for (const Landmark& landmark : room.landmarks()) {
+    protocol::Landmark* out = state.add_landmarks();
+    out->set_kind(protocol::LANDMARK_FARMHOUSE);
+    out->set_x(landmark.x);
+    out->set_y(landmark.y);
+    out->set_width(landmark.width);
+    out->set_height(landmark.height);
+  }
+  for (const std::uint32_t id : room.SleepingPlayerIds()) {
+    state.add_sleeping_player_ids(id);
+  }
   return state;
+}
+
+protocol::DayClock GameService::MakeDayClock(const Room& room) const {
+  protocol::DayClock clock;
+  clock.set_day(room.day());
+  clock.set_day_start_tick(room.day_start_tick());
+  clock.set_day_length_ticks(static_cast<std::uint32_t>(config_.DayLengthTicks()));
+  clock.set_ticks_per_game_minute(config_.ticks_per_game_minute);
+  clock.set_day_start_minute(config_.day_start_minute);
+  return clock;
 }
 
 std::vector<std::shared_ptr<GameClient>> GameService::RecipientsOf(const Room& room,
@@ -385,13 +410,8 @@ void GameService::HandleMoveInput(const std::shared_ptr<GameClient>& client, con
     return;
   }
   Room& room = *it->second;
-  const Member* member = room.FindByClient(client->client_id());
-  if (member == nullptr) {
-    ++stats_.inputs_ignored;
-    return;
-  }
-
-  const InputResult result = room.world().SetInput(member->player_id, input.sequence(), input.dir_x(), input.dir_y());
+  // 잠든 사람의 입력은 통째로 무시한다(Room이 판정한다).
+  const InputResult result = room.ApplyInput(client->client_id(), input.sequence(), input.dir_x(), input.dir_y());
   if (result == InputResult::kApplied) {
     ++stats_.inputs_applied;
   } else {
@@ -453,6 +473,9 @@ void GameService::HandleGather(const std::shared_ptr<GameClient>& client, const 
     case GatherStatus::kNotInRoom:
       response.set_result(protocol::GAME_NOT_IN_ROOM);
       break;
+    case GatherStatus::kSleeping:
+      response.set_result(protocol::GAME_SLEEPING);
+      break;
   }
   if (outcome.status != GatherStatus::kOk) {
     ++stats_.gathers_rejected;
@@ -496,6 +519,7 @@ void GameService::HandleBuild(const std::shared_ptr<GameClient>& client, const p
       ++stats_.builds_ok;
       break;
     case BuildStatus::kNotInRoom: response.set_result(protocol::GAME_NOT_IN_ROOM); break;
+    case BuildStatus::kSleeping: response.set_result(protocol::GAME_SLEEPING); break;
     case BuildStatus::kInvalidType: response.set_result(protocol::GAME_BUILD_INVALID_TYPE); break;
     case BuildStatus::kLimit: response.set_result(protocol::GAME_STRUCTURE_LIMIT); break;
     case BuildStatus::kTooFar: response.set_result(protocol::GAME_BUILD_TOO_FAR); break;
@@ -509,6 +533,33 @@ void GameService::HandleBuild(const std::shared_ptr<GameClient>& client, const p
   response.set_wood(outcome.wood);
   response.set_stone(outcome.stone);
   client->Deliver(protocol::MessageId::kBuildResponse, response);
+}
+
+// ---------------------------------------------------------------- 잠 (docs/content-day.md)
+
+void GameService::HandleSleep(const std::shared_ptr<GameClient>& client, const protocol::SleepRequest& request) {
+  SleepOutcome outcome;  // 기본은 방에 없음
+  const auto connection = connections_.find(client->client_id());
+  if (connection != connections_.end()) {
+    const auto it = rooms_.find(connection->second.room_code);
+    if (it != rooms_.end()) {
+      outcome = it->second->Sleep(client->client_id(), request.sleep());
+    }
+  }
+
+  protocol::SleepResponse response;
+  switch (outcome.status) {
+    case SleepStatus::kOk: response.set_result(protocol::GAME_OK); break;
+    case SleepStatus::kNotInRoom: response.set_result(protocol::GAME_NOT_IN_ROOM); break;
+    case SleepStatus::kTooFar: response.set_result(protocol::GAME_SLEEP_TOO_FAR); break;
+  }
+  if (outcome.status == SleepStatus::kOk) {
+    ++stats_.sleeps_ok;
+  } else {
+    ++stats_.sleeps_rejected;
+  }
+  response.set_sleeping(outcome.sleeping);
+  client->Deliver(protocol::MessageId::kSleepResponse, response);
 }
 
 // ---------------------------------------------------------------- 틱
@@ -526,6 +577,10 @@ void GameService::Tick(std::uint32_t steps) {
     protocol::WorldSnapshot snapshot;
     protocol::ResourceUpdate resource_update;  // 바뀐 노드가 없으면 nodes가 비어 있고 보내지 않는다
     protocol::StructureUpdate structure_update;  // 바뀐 구조물이 없으면 structures가 비어 있고 보내지 않는다
+    bool day_started = false;                    // 이 틱에 밤 정산을 했으면 DayStarted를 가장 먼저 보낸다
+    protocol::DayStarted day_started_message;
+    bool sleep_changed = false;                  // 잠든 사람 목록이 바뀌었으면 SleepUpdate를 마지막에 보낸다
+    protocol::SleepUpdate sleep_update;
   };
   std::vector<Outgoing> outgoing;
   outgoing.reserve(rooms_.size());
@@ -533,6 +588,7 @@ void GameService::Tick(std::uint32_t steps) {
   std::chrono::nanoseconds step_ns{0};
   std::chrono::nanoseconds update_ns{0};
   std::chrono::nanoseconds build_ns{0};
+  std::chrono::nanoseconds night_ns{0};
   for (auto& entry : rooms_) {
     Room& room = *entry.second;
     const auto t0 = Clock::now();
@@ -540,18 +596,37 @@ void GameService::Tick(std::uint32_t steps) {
       room.world().Step(dt);
     }
     const auto t1 = Clock::now();
-    // 재생할 노드를 되살린다(따라잡기 틱이 합쳐져도 한 번에 현재 틱 기준으로 처리한다).
-    stats_.nodes_respawned += room.AdvanceResources(room.world().tick());
-    const std::uint32_t completed = room.structures().Advance(room.world().tick());
-    stats_.structures_completed += completed;
-    if (completed > 0 && room.is_farm() && persistence_) {
-      // 완공은 드문 사건이라 바로 저장한다(건설 중이던 구조물이 완료 상태가 되었다).
-      persistence_->UpdateStructures(room.farm_id(), ExportStructures(room));
-      persistence_->Flush(room.farm_id());
+    const std::uint64_t tick = room.world().tick();
+
+    // 밤 정산 판정은 이동 계산 뒤에 한다. 따라잡기 틱(steps > 1)이 하루 끝을 넘어도 정산은 한 번이고 새 날은 이 틱에서
+    // 시작한다(docs/content-day.md 5.3).
+    const NightTrigger trigger = room.ShouldEndDay(tick);
+    bool night = false;
+    bool forced = false;
+    if (trigger != NightTrigger::kNone) {
+      night = true;
+      forced = trigger == NightTrigger::kForced;
+      const NightReport report = room.RunNight(tick, forced);
+      ++stats_.days_started;
+      if (forced) ++stats_.forced_nights;
+      stats_.nodes_respawned += report.respawned;
+      stats_.structures_completed += report.completed;
+      if (room.is_farm() && persistence_) {
+        // 밤 정산은 바로 저장한다(완공된 구조물. 시계 저장은 docs/content-day.md 7절).
+        persistence_->UpdateStructures(room.farm_id(), ExportStructures(room));
+        persistence_->Flush(room.farm_id());
+      }
+      const auto night_time = Clock::now() - t1;
+      night_ns += night_time;
+      AtomicMax(stats_.max_night_micros,
+                static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(night_time).count()));
     }
+    const auto t_update = Clock::now();
+    // 밤 정산에서 자리를 못 찾은 노드만 예약 시각에 다시 찾는다(따라잡기 틱이 합쳐져도 현재 틱 기준으로 한 번).
+    stats_.nodes_respawned += room.AdvanceResources(tick);
     const auto t2 = Clock::now();
     step_ns += t1 - t0;
-    update_ns += t2 - t1;
+    update_ns += t2 - t_update;
     Outgoing out;
     out.targets = RecipientsOf(room, 0);
     if (out.targets.empty()) {
@@ -570,6 +645,18 @@ void GameService::Tick(std::uint32_t steps) {
       *out.structure_update.add_structures() = MakeStructure(changed);
     }
     out.structure_update.set_tick(room.world().tick());
+    if (night) {
+      out.day_started = true;
+      out.day_started_message.set_tick(tick);
+      *out.day_started_message.mutable_clock() = MakeDayClock(room);
+      out.day_started_message.set_forced(forced);
+    }
+    std::vector<std::uint32_t> sleepers;
+    if (room.TakeSleepChange(sleepers)) {
+      out.sleep_changed = true;
+      out.sleep_update.set_tick(tick);
+      for (const std::uint32_t id : sleepers) out.sleep_update.add_sleeping_player_ids(id);
+    }
     out.snapshot.set_tick(room.world().tick());
     for (const auto& body : room.world().players()) {
       protocol::PlayerState* state = out.snapshot.add_players();
@@ -591,6 +678,9 @@ void GameService::Tick(std::uint32_t steps) {
   //    불려도(방이 지워질 수 있음) 위 단계에서 확보한 강한 참조만 쓰므로 안전하다.
   for (const auto& out : outgoing) {
     for (const auto& target : out.targets) {
+      if (out.day_started) {
+        target->Deliver(protocol::MessageId::kDayStarted, out.day_started_message);  // 정산한 틱에는 가장 먼저
+      }
       target->Deliver(protocol::MessageId::kWorldSnapshot, out.snapshot);
       ++stats_.snapshots_sent;
       if (out.resource_update.nodes_size() > 0) {
@@ -600,6 +690,9 @@ void GameService::Tick(std::uint32_t steps) {
       if (out.structure_update.structures_size() > 0) {
         target->Deliver(protocol::MessageId::kStructureUpdate, out.structure_update);
         ++stats_.structure_updates_sent;
+      }
+      if (out.sleep_changed) {
+        target->Deliver(protocol::MessageId::kSleepUpdate, out.sleep_update);
       }
     }
   }
@@ -612,6 +705,7 @@ void GameService::Tick(std::uint32_t steps) {
   stats_.tick_us_build += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(build_ns).count());
   stats_.tick_us_deliver += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(finished - deliver_start).count());
   stats_.tick_us_total += static_cast<std::uint64_t>(elapsed.count());
+  stats_.night_us += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(night_ns).count());
 }
 
 void GameService::StartTicking() {
@@ -807,9 +901,9 @@ void GameService::FinishOpenFarm(const std::shared_ptr<GameClient>& client, cons
     auto opened = std::make_unique<Room>(data.code, config_);
     opened->set_farm_id(data.farm_id);
     for (const farm::StoredStructure& stored : data.structures) {
+      // 건설 중으로 저장된 집은 남은 틱(remaining_ticks)과 상관없이 건설 중으로 되살리고 다음 밤 정산에 완공된다.
       if (!opened->RestoreStructure(stored.structure_id, stored.type, stored.x, stored.y,
-                                    stored.state == static_cast<std::uint32_t>(StructureState::kComplete),
-                                    stored.remaining_ticks)) {
+                                    stored.state == static_cast<std::uint32_t>(StructureState::kComplete))) {
         Log(LogLevel::kError, "[농장] 저장된 구조물을 복원하지 못함 farm=", data.farm_id, " 구조물=", stored.structure_id);
         return fail(protocol::GAME_STORAGE_UNAVAILABLE);
       }
@@ -864,7 +958,6 @@ void GameService::FinishOpenFarm(const std::shared_ptr<GameClient>& client, cons
 
 std::vector<farm::StoredStructure> GameService::ExportStructures(const Room& room) const {
   const auto runtime = farms_.find(room.code());
-  const std::uint64_t tick = room.world().tick();
   std::vector<farm::StoredStructure> out;
   out.reserve(room.structures().size());
   for (const Structure& structure : room.structures().structures()) {
@@ -874,10 +967,8 @@ std::vector<farm::StoredStructure> GameService::ExportStructures(const Room& roo
     stored.x = structure.x;
     stored.y = structure.y;
     stored.state = static_cast<std::uint32_t>(structure.state);
-    // 건설 중이면 완공까지 남은 틱을 저장한다(농장이 닫혀 있는 동안 시간은 흐르지 않는다).
-    if (structure.state == StructureState::kBuilding && structure.ready_tick > tick) {
-      stored.remaining_ticks = structure.ready_tick - tick;
-    }
+    // 저장 형식(state, remaining_ticks)은 그대로 둔다. 완공은 밤 정산에 일어나므로 남은 틱은 이제 항상 0이다.
+    stored.remaining_ticks = 0;
     if (runtime != farms_.end()) {
       const auto builder = runtime->second.builders.find(structure.id);
       if (builder != runtime->second.builders.end()) {

@@ -1,5 +1,6 @@
 // 자원 채집의 순수 로직 테스트: ResourceField(배치, 체력, 고갈, 재생)와 Room::Gather(거리, 쿨다운, 인벤토리).
 // 소켓도 시계도 없다. 시간은 월드 틱(Step 호출 횟수)으로만 흐른다. docs/stage4-gather.md 완료 기준 1~8.
+// 재생은 틱이 아니라 밤 정산(RespawnAllDepleted)에 일어난다(docs/content-day.md 5.4). 낮 동안의 Advance는 재시도 전용이다.
 
 #include <gtest/gtest.h>
 
@@ -135,7 +136,7 @@ TEST(ResourceFieldTest, CheckSeparatesMissingDepletedTooFarAndOk) {
   EXPECT_EQ(field.Check(node.id, node.x, node.y), NodeCheck::kOk);
   EXPECT_EQ(field.Check(node.id, node.x + config.gather_range_cm + 50.0f, node.y), NodeCheck::kTooFar);
 
-  field.Hit(node.id, 0);  // 체력 1이라 고갈된다
+  field.Hit(node.id);  // 체력 1이라 고갈된다
   EXPECT_EQ(field.Check(node.id, node.x, node.y), NodeCheck::kDepleted);
   // 고갈과 너무 멂이 겹치면 고갈이 먼저다(문서의 판정 순서)
   EXPECT_EQ(field.Check(node.id, node.x + 5000.0f, node.y), NodeCheck::kDepleted);
@@ -184,9 +185,9 @@ TEST(ResourceFieldTest, EachHitTakesOneHealthAndReturnsTheKind) {
   ASSERT_EQ(tree.kind, ResourceKind::kTree);
   ASSERT_EQ(rock.kind, ResourceKind::kRock);
 
-  EXPECT_EQ(field.Hit(tree.id, 10), ResourceKind::kTree);
+  EXPECT_EQ(field.Hit(tree.id), ResourceKind::kTree);
   EXPECT_EQ(field.Find(tree.id)->hp, config.tree_hp - 1);
-  EXPECT_EQ(field.Hit(rock.id, 10), ResourceKind::kRock);
+  EXPECT_EQ(field.Hit(rock.id), ResourceKind::kRock);
   EXPECT_EQ(field.Find(rock.id)->hp, config.rock_hp - 1);
 }
 
@@ -195,30 +196,54 @@ TEST(ResourceFieldTest, HealthNeverGoesBelowZeroAndDepletedNodesAreNotHit) {
   config.tree_hp = 2;
   ResourceField field(config);
   const std::uint32_t id = field.nodes()[0].id;
-  field.Hit(id, 0);
-  field.Hit(id, 0);
+  field.Hit(id);
+  field.Hit(id);
   EXPECT_EQ(field.Find(id)->hp, 0u);
-  field.Hit(id, 1);  // 검사 없이 불려도 0 아래로 내려가지 않는다
-  field.Hit(id, 1);
+  field.Hit(id);  // 검사 없이 불려도 0 아래로 내려가지 않는다
+  field.Hit(id);
   EXPECT_EQ(field.Find(id)->hp, 0u);
-  field.Hit(0, 1);  // 없는 번호는 무시
-  field.Hit(999999, 1);
+  field.Hit(0);  // 없는 번호는 무시
+  field.Hit(999999);
 }
 
-TEST(ResourceFieldTest, RespawnsExactlyAfterTheConfiguredTicks) {
+TEST(ResourceFieldTest, ADepletedNodeStaysDepletedThroughTheDayAndComesBackAtTheNight) {
   PlayConfig config;
   config.tree_hp = 1;
-  config.respawn_ticks = 600;
   ResourceField field(config);
   const std::uint32_t id = field.nodes()[0].id;
 
-  field.Hit(id, 1000);  // 1000틱에 고갈
+  field.Hit(id);  // 고갈
   EXPECT_EQ(field.Find(id)->hp, 0u);
-  EXPECT_EQ(field.Advance(1599), 0u) << "599틱 뒤에는 아직";
-  EXPECT_EQ(field.Find(id)->hp, 0u);
-  EXPECT_EQ(field.Advance(1600), 1u) << "600틱 뒤에 재생";
+  // 옛 규칙(고갈 뒤 600틱 재생)의 시각이 지나도, 낮 동안의 Advance는 채집으로 고갈된 노드를 건드리지 않는다.
+  EXPECT_EQ(field.Advance(600), 0u);
+  EXPECT_EQ(field.Advance(601), 0u);
+  EXPECT_EQ(field.Advance(1000000), 0u);
+  EXPECT_EQ(field.Find(id)->hp, 0u) << "밤 정산 전에는 고갈 상태";
+  EXPECT_EQ(field.RespawnAllDepleted(1000001), 1u) << "밤 정산에 재생";
   EXPECT_EQ(field.Find(id)->hp, config.tree_hp);
-  EXPECT_EQ(field.Advance(1601), 0u) << "이미 재생했으면 다시 세지 않는다";
+  EXPECT_EQ(field.RespawnAllDepleted(1000002), 0u) << "이미 재생했으면 다시 세지 않는다";
+}
+
+TEST(ResourceFieldTest, TheNightBringsBackEveryDepletedNodeAtOnceAndLeavesTheOthersAlone) {
+  PlayConfig config;
+  config.tree_hp = 1;
+  config.rock_hp = 3;
+  ResourceField field(config);
+  field.Hit(1);
+  field.Hit(2);
+  field.Hit(5);
+  const std::uint32_t rock = config.tree_count + 1;
+  field.Hit(rock);  // 체력 3 -> 2(고갈 아님)
+  field.TakeChanges();
+  EXPECT_EQ(field.depleted_count(), 3u);
+  EXPECT_EQ(field.RespawnAllDepleted(50), 3u);
+  EXPECT_EQ(field.depleted_count(), 0u);
+  EXPECT_EQ(field.Find(rock)->hp, 2u) << "고갈되지 않은 노드는 체력을 채우지 않는다";
+  const auto changes = field.TakeChanges();
+  ASSERT_EQ(changes.size(), 3u) << "되살아난 노드만 바뀜으로 기록된다";
+  EXPECT_EQ(changes[0].node_id, 1u);
+  EXPECT_EQ(changes[1].node_id, 2u);
+  EXPECT_EQ(changes[2].node_id, 5u);
 }
 
 TEST(ResourceFieldTest, RespawnLeavesTheStructureSpotAndIsDeterministic) {
@@ -226,16 +251,15 @@ TEST(ResourceFieldTest, RespawnLeavesTheStructureSpotAndIsDeterministic) {
   config.tree_count = 1;
   config.rock_count = 0;
   config.tree_hp = 1;
-  config.respawn_ticks = 10;
 
   // 옛 자리 위에 집이 있다고 하자. 재생한 노드는 집 밖, 맵 안쪽에 나타난다.
   ResourceField field(config);
   const std::uint32_t id = field.nodes()[0].id;
   const ResourceNode before = *field.Find(id);
-  field.Hit(id, 0);
+  field.Hit(id);
   SpotBlockers blockers;
   blockers.rects.push_back(Rect{static_cast<double>(before.x), static_cast<double>(before.y), 150.0, 150.0});
-  EXPECT_EQ(field.Advance(10, blockers), 1u);
+  EXPECT_EQ(field.RespawnAllDepleted(10, blockers), 1u);
   const ResourceNode after = *field.Find(id);
   EXPECT_FALSE(CircleOverlapsRect(after.x, after.y, config.node_collision_radius_cm, blockers.rects[0])) << "집 밖에 나타난다";
   EXPECT_GE(after.x, config.node_edge_margin_cm);
@@ -245,8 +269,8 @@ TEST(ResourceFieldTest, RespawnLeavesTheStructureSpotAndIsDeterministic) {
 
   // 같은 설정, 같은 틱, 같은 막힌 곳이면 같은 자리다.
   ResourceField again(config);
-  again.Hit(id, 0);
-  EXPECT_EQ(again.Advance(10, blockers), 1u);
+  again.Hit(id);
+  EXPECT_EQ(again.RespawnAllDepleted(10, blockers), 1u);
   EXPECT_FLOAT_EQ(again.Find(id)->x, after.x);
   EXPECT_FLOAT_EQ(again.Find(id)->y, after.y);
 }
@@ -256,15 +280,14 @@ TEST(ResourceFieldTest, StaysDepletedWhileNoSpotIsFreeAndRespawnsLater) {
   config.tree_count = 1;
   config.rock_count = 0;
   config.tree_hp = 1;
-  config.respawn_ticks = 10;
   ResourceField field(config);
   const std::uint32_t id = field.nodes()[0].id;
-  field.Hit(id, 0);
+  field.Hit(id);
 
-  // 맵 전체가 막혀 있으면 자리가 없다. 고갈 상태로 남고 세지 않는다.
+  // 밤 정산 때 맵 전체가 막혀 있으면 자리가 없다. 고갈 상태로 남고 세지 않는다.
   SpotBlockers everywhere;
   everywhere.rects.push_back(Rect{2500.0, 2500.0, 2500.0, 2500.0});
-  EXPECT_EQ(field.Advance(10, everywhere), 0u);
+  EXPECT_EQ(field.RespawnAllDepleted(10, everywhere), 0u);
   EXPECT_EQ(field.Find(id)->hp, 0u);
 
   // 자리를 못 찾으면 매 틱 다시 찾지 않고 respawn_retry_ticks(20) 뒤에 다시 찾는다. 막힌 것이 없어져도 그때까지는 기다린다.
@@ -279,14 +302,13 @@ TEST(ResourceFieldTest, ARetryThatFailsAgainWaitsAnotherInterval) {
   config.tree_count = 1;
   config.rock_count = 0;
   config.tree_hp = 1;
-  config.respawn_ticks = 10;
   config.respawn_retry_ticks = 7;
   ResourceField field(config);
   const std::uint32_t id = field.nodes()[0].id;
-  field.Hit(id, 0);
+  field.Hit(id);
   SpotBlockers everywhere;
   everywhere.rects.push_back(Rect{2500.0, 2500.0, 2500.0, 2500.0});
-  EXPECT_EQ(field.Advance(10, everywhere), 0u);  // 첫 시도 실패 -> 17틱에 다시
+  EXPECT_EQ(field.RespawnAllDepleted(10, everywhere), 0u);  // 밤 정산의 첫 시도 실패 -> 17틱에 다시
   EXPECT_EQ(field.Advance(16, SpotBlockers{}), 0u);
   EXPECT_EQ(field.Advance(17, everywhere), 0u);  // 둘째 시도도 실패 -> 24틱에 다시
   EXPECT_EQ(field.Advance(23, SpotBlockers{}), 0u);
@@ -337,12 +359,11 @@ TEST(ResourceFieldTest, RespawnedNodesNeverLandInsideTheBuildZone) {
   config.tree_count = 10;
   config.rock_count = 0;
   config.tree_hp = 1;
-  config.respawn_ticks = 1;
   ResourceField field(config);
   for (std::uint64_t round = 0; round < 200; ++round) {
     const std::uint64_t tick = round * 3;
-    for (const ResourceNode& node : field.nodes()) field.Hit(node.id, tick);
-    field.Advance(tick + 1);
+    for (const ResourceNode& node : field.nodes()) field.Hit(node.id);
+    field.RespawnAllDepleted(tick + 1);
     for (const ResourceNode& node : field.nodes()) {
       ASSERT_GT(node.hp, 0u) << "라운드 " << round;
       ASSERT_FALSE(InsideZone(config, node)) << "라운드 " << round << " 노드 " << node.id << " (" << node.x << ", " << node.y << ")";
@@ -353,7 +374,24 @@ TEST(ResourceFieldTest, RespawnedNodesNeverLandInsideTheBuildZone) {
 TEST(ResourceFieldTest, AdvanceWithNothingDepletedChangesNothing) {
   ResourceField field(PlayConfig{});
   EXPECT_EQ(field.Advance(100000), 0u);
+  EXPECT_EQ(field.RespawnAllDepleted(100000), 0u);
   EXPECT_FALSE(field.HasChanges());
+}
+
+TEST(ResourceFieldTest, ANightThatFindsASpotCancelsAPendingRetry) {
+  PlayConfig config;
+  config.tree_count = 1;
+  config.rock_count = 0;
+  config.tree_hp = 1;
+  ResourceField field(config);
+  SpotBlockers everywhere;
+  everywhere.rects.push_back(Rect{2500.0, 2500.0, 2500.0, 2500.0});
+  field.Hit(1);
+  ASSERT_EQ(field.RespawnAllDepleted(10, everywhere), 0u);  // 재시도 예약(30틱)
+  ASSERT_EQ(field.RespawnAllDepleted(20), 1u) << "다음 밤 정산이 먼저 되살린다";
+  field.Hit(1);  // 다시 고갈(채집)
+  EXPECT_EQ(field.Advance(30), 0u) << "옛 재시도 예약이 남아 낮에 되살리지 않는다";
+  EXPECT_EQ(field.Find(1)->hp, 0u);
 }
 
 TEST(ResourceFieldTest, ChangesAreCollectedOncePerNodeSortedAndThenCleared) {
@@ -361,9 +399,9 @@ TEST(ResourceFieldTest, ChangesAreCollectedOncePerNodeSortedAndThenCleared) {
   config.tree_hp = 3;
   ResourceField field(config);
   EXPECT_FALSE(field.HasChanges());
-  field.Hit(3, 0);
-  field.Hit(1, 0);
-  field.Hit(3, 0);  // 같은 노드를 두 번 쳐도 한 번만, 마지막 값으로
+  field.Hit(3);
+  field.Hit(1);
+  field.Hit(3);  // 같은 노드를 두 번 쳐도 한 번만, 마지막 값으로
   EXPECT_TRUE(field.HasChanges());
 
   const auto changes = field.TakeChanges();
@@ -379,11 +417,10 @@ TEST(ResourceFieldTest, ChangesAreCollectedOncePerNodeSortedAndThenCleared) {
 TEST(ResourceFieldTest, RespawnIsReportedAsAChange) {
   PlayConfig config;
   config.tree_hp = 1;
-  config.respawn_ticks = 5;
   ResourceField field(config);
-  field.Hit(1, 0);
+  field.Hit(1);
   field.TakeChanges();  // 고갈 알림은 이미 나갔다고 치고 비운다
-  field.Advance(5);
+  field.RespawnAllDepleted(5);
   const auto changes = field.TakeChanges();
   ASSERT_EQ(changes.size(), 1u);
   EXPECT_EQ(changes[0].node_id, 1u);
@@ -504,19 +541,21 @@ TEST(RoomGatherTest, RejectedRequestsChangeNothingNotEvenTheCooldownBase) {
   EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
 }
 
-TEST(RoomGatherTest, DepletedNodeRespawnsAfterExactlyTheConfiguredTicks) {
+TEST(RoomGatherTest, ADepletedNodeStaysDepletedAllDayAndReturnsAfterTheNight) {
   PlayConfig config = WideRange();
   config.tree_hp = 1;
-  config.respawn_ticks = 600;
   Room room("111111", config);
   room.AddMember(1, "alice");
 
   ASSERT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
   EXPECT_EQ(room.resources().Find(1)->hp, 0u);
-  Advance(room, 599);
+  Advance(room, 600);  // 옛 재생 시각
   EXPECT_EQ(room.resources().Find(1)->hp, 0u);
   EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kNodeDepleted);
-  Advance(room, 1);
+  Advance(room, 5000);
+  EXPECT_EQ(room.resources().Find(1)->hp, 0u) << "밤 정산 전에는 하루 종일 고갈";
+  const NightReport report = room.RunNight(room.world().tick(), false);
+  EXPECT_EQ(report.respawned, 1u);
   EXPECT_EQ(room.resources().Find(1)->hp, 1u);
   EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kOk) << "재생한 노드는 다시 칠 수 있다";
 }
@@ -565,6 +604,34 @@ TEST(RoomGatherTest, TheInventoryIsLostWhenLeavingAndStartsEmptyOnRejoin) {
   room.AddMember(1, "alice");
   EXPECT_EQ(room.FindByClient(1)->wood, 0u);
   EXPECT_EQ(room.Gather(1, 1).wood, 1u);
+}
+
+TEST(RoomGatherTest, ASleepingPlayerCannotGatherAndNothingChanges) {
+  PlayConfig config = WideRange();
+  config.sleep_range_cm = 100000.0f;  // 어디서든 잘 수 있게(잠 거리는 따로 시험한다)
+  config.gather_cooldown_ticks = 10;
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+  ASSERT_EQ(room.Gather(1, 1).status, GatherStatus::kOk);
+  Advance(room, 20);  // 쿨다운이 끝났다
+  ASSERT_EQ(room.Sleep(1, true).status, SleepStatus::kOk);
+  const std::uint32_t hp = room.resources().Find(1)->hp;
+  const Member before = *room.FindByClient(1);
+
+  const GatherOutcome out = room.Gather(1, 1);
+  EXPECT_EQ(out.status, GatherStatus::kSleeping);
+  EXPECT_EQ(out.wood, 1u) << "거부 응답도 현재 인벤토리를 담는다";
+  EXPECT_EQ(room.resources().Find(1)->hp, hp) << "노드가 바뀌지 않는다";
+  EXPECT_EQ(room.FindByClient(1)->wood, before.wood);
+  EXPECT_EQ(room.FindByClient(1)->last_gather_tick, before.last_gather_tick) << "쿨다운 기준이 바뀌지 않는다";
+
+  // 판정 순서: 방에 없음 -> 잠듦 -> 노드 없음 -> 고갈 -> 너무 멂 -> 쿨다운
+  EXPECT_EQ(room.Gather(99, 1).status, GatherStatus::kNotInRoom);
+  EXPECT_EQ(room.Gather(1, 0).status, GatherStatus::kSleeping) << "잠듦이 노드 없음보다 먼저";
+  EXPECT_EQ(room.Gather(1, 9999).status, GatherStatus::kSleeping);
+
+  ASSERT_EQ(room.Sleep(1, false).status, SleepStatus::kOk);
+  EXPECT_EQ(room.Gather(1, 1).status, GatherStatus::kOk) << "깨어나면 다시 칠 수 있다";
 }
 
 TEST(RoomGatherTest, WorksInARoomWithNoNodes) {

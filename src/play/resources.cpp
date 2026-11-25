@@ -1,5 +1,7 @@
 #include "play/resources.h"
 
+#include "play/landmark.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -53,6 +55,7 @@ ResourceField::ResourceField(const PlayConfig& config) : config_(config) {
   if (span_x <= 0.0f || span_y <= 0.0f) {
     return;  // 맵이 너무 작아 둘 곳이 없다(노드 0개)
   }
+  const std::vector<Landmark> landmarks = MakeLandmarks(config);
 
   const auto place = [&](ResourceKind kind, std::uint32_t count, std::uint32_t hp) {
     if (hp == 0) {
@@ -69,6 +72,13 @@ ResourceField::ResourceField(const PlayConfig& config) : config_(config) {
         }
         // 건설 구역 안에는 두지 않는다(건물이 차지할 자리를 비워 둔다).
         if (InsideBuildZone(config, x, y)) {
+          continue;
+        }
+        // 고정 물체(시작 집) 위에는 두지 않는다(기본값에서는 건설 구역 안이라 위 규칙으로 이미 걸러진다).
+        const bool on_landmark = std::any_of(landmarks.begin(), landmarks.end(), [&](const Landmark& landmark) {
+          return CircleOverlapsRect(x, y, config.node_collision_radius_cm, landmark.Footprint());
+        });
+        if (on_landmark) {
           continue;
         }
         // 다른 노드와 너무 가까우면 안 된다.
@@ -128,7 +138,7 @@ NodeCheck ResourceField::Check(std::uint32_t node_id, float x, float y) const {
   return NodeCheck::kOk;
 }
 
-ResourceKind ResourceField::Hit(std::uint32_t node_id, std::uint64_t tick) {
+ResourceKind ResourceField::Hit(std::uint32_t node_id) {
   ResourceNode* node = FindMutable(node_id);
   if (node == nullptr) {
     return ResourceKind::kTree;
@@ -138,7 +148,7 @@ ResourceKind ResourceField::Hit(std::uint32_t node_id, std::uint64_t tick) {
   }
   --node->hp;
   if (node->hp == 0) {
-    node->respawn_tick = tick + config_.respawn_ticks;
+    node->respawn_tick = kNoRetry;  // 밤 정산까지 고갈 상태로 남는다
     ++depleted_count_;
   }
   MarkChanged(node_id);
@@ -203,26 +213,53 @@ bool ResourceField::FindRespawnSpot(std::uint32_t node_id, std::uint64_t tick, c
   return false;
 }
 
-std::uint32_t ResourceField::Advance(std::uint64_t tick, const SpotBlockers& blockers) {
+bool ResourceField::TryRespawn(ResourceNode& node, std::uint64_t tick, const SpotBlockers& blockers) {
+  float x = 0.0f;
+  float y = 0.0f;
+  if (!FindRespawnSpot(node.id, tick, blockers, x, y)) {
+    // 지금은 자리가 없다. 고갈 상태로 남고 respawn_retry_ticks 뒤에 다시 찾는다(매 틱 찾지 않는다).
+    node.respawn_tick = tick + std::max<std::uint32_t>(1, config_.respawn_retry_ticks);
+    return false;
+  }
+  node.x = x;
+  node.y = y;
+  node.hp = node.max_hp;
+  node.respawn_tick = 0;
+  --depleted_count_;
+  MarkChanged(node.id);
+  return true;
+}
+
+std::uint32_t ResourceField::RespawnAllDepleted(std::uint64_t tick, const SpotBlockers& blockers) {
   if (depleted_count_ == 0) {
     return 0;
   }
   std::uint32_t respawned = 0;
+  retry_count_ = 0;
   for (auto& node : nodes_) {
-    if (node.hp == 0 && tick >= node.respawn_tick) {
-      float x = 0.0f;
-      float y = 0.0f;
-      if (!FindRespawnSpot(node.id, tick, blockers, x, y)) {
-        // 지금은 자리가 없다. 고갈 상태로 남고 respawn_retry_ticks 뒤에 다시 찾는다(매 틱 찾지 않는다).
-        node.respawn_tick = tick + std::max<std::uint32_t>(1, config_.respawn_retry_ticks);
-        continue;
-      }
-      node.x = x;
-      node.y = y;
-      node.hp = node.max_hp;
-      --depleted_count_;
+    if (node.hp != 0) {
+      continue;
+    }
+    if (TryRespawn(node, tick, blockers)) {
       ++respawned;
-      MarkChanged(node.id);
+    } else {
+      ++retry_count_;
+    }
+  }
+  return respawned;
+}
+
+std::uint32_t ResourceField::Advance(std::uint64_t tick, const SpotBlockers& blockers) {
+  if (retry_count_ == 0) {
+    return 0;
+  }
+  std::uint32_t respawned = 0;
+  for (auto& node : nodes_) {
+    if (node.hp == 0 && node.respawn_tick != kNoRetry && tick >= node.respawn_tick) {
+      if (TryRespawn(node, tick, blockers)) {
+        --retry_count_;
+        ++respawned;
+      }
     }
   }
   return respawned;

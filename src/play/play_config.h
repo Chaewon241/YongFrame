@@ -29,8 +29,8 @@ struct PlayConfig {
   std::uint32_t rock_count = 20;
   std::uint32_t rock_hp = 8;
   float gather_range_cm = 200.0f;            // 서버가 아는 플레이어 위치와 노드 중심의 거리(경계 포함)
-  std::uint32_t gather_cooldown_ticks = 10;  // 플레이어별. 받아들여진 마지막 채집으로부터
-  std::uint32_t respawn_ticks = 600;         // 고갈된 틱으로부터 이만큼 지나면 체력이 가득 차 돌아온다
+  std::uint32_t gather_cooldown_ticks = 10;  // 플레이어별. 받아들여진 마지막 채집으로부터(틱)
+  // 고갈된 노드는 밤 정산에 되살아난다(docs/content-day.md 5.4). 예전의 틱 기준 재생(respawn_ticks)은 없앴다.
   float node_min_gap_cm = 150.0f;            // 노드 사이 최소 거리
   float node_edge_margin_cm = 200.0f;        // 맵 가장자리에서 이만큼 안쪽에만 둔다
   float spawn_clear_radius_cm = 500.0f;      // 맵 중앙(시작 위치) 이 반지름 안에는 두지 않는다
@@ -43,7 +43,7 @@ struct PlayConfig {
   std::uint32_t house_cost_stone = 10;
   float build_grid_cm = 100.0f;              // 요청 좌표를 이 격자의 중심에 맞춘다
   float build_range_cm = 500.0f;             // 서버가 아는 내 위치에서 격자에 맞춘 중심까지(경계 포함)
-  std::uint32_t build_ticks = 100;           // 건설 중 상태가 이어지는 틱 수(5초)
+  // 지은 집은 다음 밤 정산에 완공된다(docs/content-day.md 5.4). 예전의 틱 기준 완공(build_ticks)은 없앴다.
   std::uint32_t max_structures = 20;         // 방당 구조물 상한
 
   // ---- 농장 저장 (docs/persistence.md). 게임 규칙이 아니라 저장 방식의 기본값이다 ----
@@ -64,6 +64,30 @@ struct PlayConfig {
   std::uint32_t bench_prebuilt_structures = 0;
   // **부하 측정 전용.** true이면 구조물과 노드가 이동을 막지 않는다(월드에 장애물을 연결하지 않는다). 충돌 비용을 가르는 실험용이다.
   bool bench_no_collision = false;
+
+  // ---- 하루와 잠 (docs/content-day.md 4절). 임의 기본값 ----
+  // 시간 단위 구분: "하루" 단위로 바뀌는 것은 노드 재생과 건설 완공(밤 정산)이다. 채집 쿨다운, 재생 자리 재시도,
+  // 농장 주기 저장은 그대로 "틱" 단위다.
+  std::uint32_t day_start_minute = 360;     // 하루 시작 시각(06:00). 자정부터 센 게임 분
+  std::uint32_t day_end_minute = 1560;      // 하루 끝 시각(다음 날 02:00). 24시간을 넘겨 센다
+  std::uint32_t ticks_per_game_minute = 10; // 게임 1분의 틱 수(0.5초). 하루 = (1560 - 360) x 10 = 12,000틱 = 10분
+  // **부하 측정과 시험 전용.** 0보다 크면 하루가 이 틱 수다(서버 옵션 --bench-day-ticks). 0이면 위 값으로 계산한다.
+  std::uint32_t bench_day_ticks = 0;
+  float sleep_range_cm = 150.0f;            // 내 중심에서 잘 수 있는 집 발자국까지의 최단 거리(경계 포함)
+  // 시작 집(고정 물체). 모든 방의 같은 자리에 있고, 이동을 막고, 그 위에 지을 수 없고, 그 앞에서 잘 수 있다.
+  // 너비가 0이면 시작 집이 없다(시작 집과 무관한 시험용).
+  float farmhouse_x_cm = 2500.0f;           // 중심. 발자국 x 2300~2700, y 2700~3000
+  float farmhouse_y_cm = 2850.0f;
+  float farmhouse_width_cm = 400.0f;
+  float farmhouse_height_cm = 300.0f;
+
+  // 하루의 틱 수. bench_day_ticks가 있으면 그 값, 아니면 (끝 - 시작) x 분당 틱. 최소 1.
+  std::uint64_t DayLengthTicks() const {
+    if (bench_day_ticks > 0) return bench_day_ticks;
+    const std::uint64_t minutes = day_end_minute > day_start_minute ? day_end_minute - day_start_minute : 0;
+    const std::uint64_t length = minutes * ticks_per_game_minute;
+    return length == 0 ? 1 : length;
+  }
 
   float TickSeconds() const { return 1.0f / static_cast<float>(tick_rate_hz == 0 ? 1 : tick_rate_hz); }
 };

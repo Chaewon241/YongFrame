@@ -18,14 +18,15 @@ using namespace testing_support;
 
 const ::testing::Environment* const kQuiet = ::testing::AddGlobalTestEnvironment(new QuietLogEnvironment);
 
-// 채집이 빠르고(쿨다운 없음, 체력 넉넉, 어디서든 칠 수 있음) 건설이 빨리 끝나는 서버. 모아서 저장하는 주기는 길게 둔다.
-server::ServerConfig FarmConfig(std::uint32_t build_ticks = 10, std::uint64_t flush_ticks = 100000) {
+// 채집이 빠르고(쿨다운 없음, 체력 넉넉, 어디서든 칠 수 있음) 하루가 짧아(bench_day_ticks) 밤 정산(완공)이 빨리 오는 서버.
+// 0이면 기본 하루(10분)라 시험 중에는 밤이 오지 않는다. 모아서 저장하는 주기는 길게 둔다.
+server::ServerConfig FarmConfig(std::uint32_t bench_day_ticks = 0, std::uint64_t flush_ticks = 100000) {
   server::ServerConfig config = DefaultServerConfig();
   config.play.gather_range_cm = 100000.0f;
   config.play.gather_cooldown_ticks = 0;
   config.play.tree_hp = 1000;
   config.play.rock_hp = 1000;
-  config.play.build_ticks = build_ticks;
+  config.play.bench_day_ticks = bench_day_ticks;
   config.play.farm_flush_interval_ticks = flush_ticks;
   return config;
 }
@@ -235,7 +236,7 @@ TEST(FarmIntegration, GatheringIsSavedInBatchesNotOnEveryHit) {
 }
 
 TEST(FarmIntegration, AShortIntervalSavesGatheringWhileTheFarmIsStillOpen) {
-  TestServer server(FarmConfig(10, /*flush_ticks=*/5));  // 5틱 = 0.25초
+  TestServer server(FarmConfig(/*bench_day_ticks=*/0, /*flush_ticks=*/5));  // 5틱 = 0.25초
   auto alice = ConnectLoggedIn(server, "alice_01");
   OpenFarmCode(*alice);
   Collect(*alice, 3);
@@ -256,7 +257,7 @@ TEST(FarmIntegration, StoppingTheServerSavesProgressThatWasNotSavedYet) {
 }
 
 TEST(FarmIntegration, SaveFailuresDoNotStopTheGameAndAreRetriedUntilTheyWork) {
-  TestServer server(FarmConfig(10, /*flush_ticks=*/5));
+  TestServer server(FarmConfig(/*bench_day_ticks=*/0, /*flush_ticks=*/5));
   auto alice = ConnectLoggedIn(server, "alice_01");
   OpenFarmCode(*alice);
   server.farms().SetSaveFailing(true);
@@ -273,11 +274,11 @@ TEST(FarmIntegration, SaveFailuresDoNotStopTheGameAndAreRetriedUntilTheyWork) {
 // ============================================================ 건설
 
 TEST(FarmIntegration, BuildingIsSavedImmediatelyEvenWhenTheFlushIntervalIsLong) {
-  TestServer server(FarmConfig(/*build_ticks=*/1000));  // 건설 중인 채로 유지
+  TestServer server(FarmConfig(/*bench_day_ticks=*/0));  // 밤이 오지 않아 건설 중인 채로 유지
   auto alice = ConnectLoggedIn(server, "alice_01");
   OpenFarmCode(*alice);
   Collect(*alice, 20, 10);
-  const auto built = Build(*alice, 2400.0f, 2800.0f);
+  const auto built = Build(*alice, 2400.0f, 2000.0f);
   ASSERT_EQ(built.result(), protocol::GAME_OK);
 
   ASSERT_TRUE(WaitUntil([&] {
@@ -287,9 +288,9 @@ TEST(FarmIntegration, BuildingIsSavedImmediatelyEvenWhenTheFlushIntervalIsLong) 
   const auto farm = server.farms().Get(1);
   EXPECT_EQ(farm->structures[0].structure_id, 1u);
   EXPECT_EQ(farm->structures[0].x, 2400.0f);
-  EXPECT_EQ(farm->structures[0].y, 2800.0f);
+  EXPECT_EQ(farm->structures[0].y, 2000.0f);
   EXPECT_EQ(farm->structures[0].state, 0u) << "건설 중";
-  EXPECT_GT(farm->structures[0].remaining_ticks, 900u);
+  EXPECT_EQ(farm->structures[0].remaining_ticks, 0u) << "완공은 밤 정산에 일어나므로 남은 틱은 저장하지 않는다(0)";
   EXPECT_EQ(farm->structures[0].built_by_account_id, 1u);
   // 같은 저장에 줄어든 인벤토리와 늘어난 집 수가 함께 들어간다.
   EXPECT_TRUE(SavedWoodIs(server, 1, 1, 0));
@@ -299,12 +300,12 @@ TEST(FarmIntegration, BuildingIsSavedImmediatelyEvenWhenTheFlushIntervalIsLong) 
   EXPECT_EQ(server.accounts().StatsOf(1)->wood_gathered, 20u);
 }
 
-TEST(FarmIntegration, CompletionIsSavedImmediately) {
-  TestServer server(FarmConfig(/*build_ticks=*/10));
+TEST(FarmIntegration, CompletionAtTheNightIsSavedImmediately) {
+  TestServer server(FarmConfig(/*bench_day_ticks=*/10));
   auto alice = ConnectLoggedIn(server, "alice_01");
   OpenFarmCode(*alice);
   Collect(*alice, 20, 10);
-  ASSERT_EQ(Build(*alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  ASSERT_EQ(Build(*alice, 2400.0f, 2000.0f).result(), protocol::GAME_OK);
   protocol::StructureUpdate update;
   ASSERT_TRUE(WaitStructureUpdate(*alice, update, [](const protocol::StructureUpdate& u) {
     return u.structures_size() == 1 && u.structures(0).state() == protocol::STRUCTURE_COMPLETE;
@@ -312,15 +313,15 @@ TEST(FarmIntegration, CompletionIsSavedImmediately) {
   EXPECT_TRUE(WaitUntil([&] {
     const auto farm = server.farms().Get(1);
     return farm && farm->structures.size() == 1 && farm->structures[0].state == 1u && farm->structures[0].remaining_ticks == 0u;
-  })) << "완공도 바로 저장되어야 한다";
+  })) << "밤 정산의 완공도 바로 저장되어야 한다";
 }
 
 TEST(FarmIntegration, ABuiltHouseIsStillThereAfterTheFarmClosesAndReopens) {
-  TestServer server(FarmConfig(/*build_ticks=*/10));
+  TestServer server(FarmConfig(/*bench_day_ticks=*/10));
   auto alice = ConnectLoggedIn(server, "alice_01");
   OpenFarmCode(*alice);
   Collect(*alice, 20, 10);
-  ASSERT_EQ(Build(*alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  ASSERT_EQ(Build(*alice, 2400.0f, 2000.0f).result(), protocol::GAME_OK);
   protocol::StructureUpdate update;
   ASSERT_TRUE(WaitStructureUpdate(*alice, update, [](const protocol::StructureUpdate& u) {
     return u.structures_size() == 1 && u.structures(0).state() == protocol::STRUCTURE_COMPLETE;
@@ -332,43 +333,42 @@ TEST(FarmIntegration, ABuiltHouseIsStillThereAfterTheFarmClosesAndReopens) {
   ASSERT_EQ(reopened.result(), protocol::GAME_OK);
   ASSERT_EQ(reopened.state().structures_size(), 1) << "집이 사라졌다";
   EXPECT_EQ(reopened.state().structures(0).x(), 2400.0f);
-  EXPECT_EQ(reopened.state().structures(0).y(), 2800.0f);
+  EXPECT_EQ(reopened.state().structures(0).y(), 2000.0f);
   EXPECT_EQ(reopened.state().structures(0).state(), protocol::STRUCTURE_COMPLETE);
 
   // 집은 이동을 막는다(복원된 구조물도 충돌에 쓰인다): 같은 자리에 또 지을 수 없다.
   Collect(*alice, 20, 10);
-  EXPECT_EQ(Build(*alice, 2400.0f, 2800.0f).result(), protocol::GAME_BUILD_BLOCKED);
+  EXPECT_EQ(Build(*alice, 2400.0f, 2000.0f).result(), protocol::GAME_BUILD_BLOCKED);
 }
 
-TEST(FarmIntegration, ConstructionProgressIsSavedAndTheClosedFarmDoesNotAdvanceTime) {
-  TestServer server(FarmConfig(/*build_ticks=*/40));  // 40틱 = 2초
+TEST(FarmIntegration, AHouseClosedUnderConstructionIsStillBuildingWhenReopenedAndCompletesAtTheNextNight) {
+  TestServer server(FarmConfig(/*bench_day_ticks=*/40));  // 하루 40틱 = 2초
   auto alice = ConnectLoggedIn(server, "alice_01");
   OpenFarmCode(*alice);
   Collect(*alice, 20, 10);
-  ASSERT_EQ(Build(*alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);
-  std::this_thread::sleep_for(Millis(400));  // 건설이 조금 진행된다(8틱쯤). 닫을 때 남은 틱을 다시 저장해야 한다
-  ASSERT_EQ(LeaveRoom(*alice).result(), protocol::GAME_OK);  // 건설이 끝나기 전에 농장이 닫힌다
+  ASSERT_EQ(Build(*alice, 2400.0f, 2000.0f).result(), protocol::GAME_OK);
+  ASSERT_EQ(LeaveRoom(*alice).result(), protocol::GAME_OK);  // 밤이 오기 전에 농장이 닫힌다
   ASSERT_TRUE(WaitUntil([&] { return server.game_stats().current_rooms.load() == 0; }));
   ASSERT_TRUE(WaitUntil([&] {
     const auto farm = server.farms().Get(1);
-    return farm && farm->structures.size() == 1 && farm->structures[0].state == 0u &&
-           farm->structures[0].remaining_ticks < 40u;
-  })) << "닫힐 때 건설이 진행된 만큼 줄어든 남은 틱이 저장되어야 한다";
-  const auto saved_remaining = server.farms().Get(1)->structures[0].remaining_ticks;
-  EXPECT_GT(saved_remaining, 0u);
-  EXPECT_LT(saved_remaining, 40u);
+    return farm && farm->structures.size() == 1 && farm->structures[0].state == 0u;
+  })) << "닫힐 때 건설 중인 상태로 저장되어야 한다";
+  EXPECT_EQ(server.farms().Get(1)->structures[0].remaining_ticks, 0u);
+  EXPECT_EQ(server.game_stats().structures_completed.load(), 0u) << "닫히기 전에 밤이 오지 않았다";
 
-  std::this_thread::sleep_for(Millis(2500));  // 건설 시간(2초)보다 오래 닫아 둔다. 닫힌 동안 시간은 흐르지 않는다.
+  const auto nights_when_closed = server.game_stats().days_started.load();
+  std::this_thread::sleep_for(Millis(2500));  // 하루(2초)보다 오래 닫아 둔다. 닫힌 농장에는 밤이 오지 않는다.
+  EXPECT_EQ(server.game_stats().days_started.load(), nights_when_closed) << "닫힌 농장은 틱이 돌지 않는다";
   const auto reopened = CreateRoom(*alice, "x");
   ASSERT_EQ(reopened.result(), protocol::GAME_OK);
   ASSERT_EQ(reopened.state().structures_size(), 1);
-  EXPECT_EQ(reopened.state().structures(0).state(), protocol::STRUCTURE_BUILDING) << "닫혀 있는 동안 건설이 진행되면 안 된다";
-  EXPECT_EQ(reopened.state().structures(0).ready_tick(), saved_remaining) << "남은 틱만큼 더 있어야 완공된다";
+  EXPECT_EQ(reopened.state().structures(0).state(), protocol::STRUCTURE_BUILDING) << "닫혀 있는 동안 완공되면 안 된다";
+  EXPECT_EQ(reopened.state().structures(0).ready_tick(), 0u) << "건설 중이면 0";
 
   protocol::StructureUpdate update;
   EXPECT_TRUE(WaitStructureUpdate(*alice, update, [](const protocol::StructureUpdate& u) {
     return u.structures_size() == 1 && u.structures(0).state() == protocol::STRUCTURE_COMPLETE;
-  }, Millis(5000))) << "다시 열면 남은 시간 뒤에 완공된다";
+  }, Millis(5000))) << "다시 열면 다음 밤 정산에 완공된다";
 }
 
 // ============================================================ 여러 사람

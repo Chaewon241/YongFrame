@@ -90,6 +90,13 @@ struct GameStats {
   Counter tick_us_build{0};    // 수신자 목록과 스냅샷/갱신 메시지 구성
   Counter tick_us_deliver{0};  // 전송(Deliver: 직렬화, 프레임, 송신 큐, 송신 시작)
   Counter tick_us_total{0};    // 한 틱 전체
+  // 하루와 잠 (docs/content-day.md). 밤 정산 시간은 위 틱시간 분해와 따로 센다(갱신에 들어가지 않는다).
+  Counter days_started{0};      // 밤 정산 수(방마다 센다)
+  Counter forced_nights{0};     // 그중 02:00 강제 정산
+  Counter night_us{0};          // 밤 정산(RunNight와 그 저장 요청)에 쓴 시간 합계(마이크로초)
+  Counter max_night_micros{0};  // 방 하나의 밤 정산에 걸린 시간의 최댓값(마이크로초)
+  Counter sleeps_ok{0};         // 받아들인 잠자기/깨어나기 요청 수(변화 없는 성공 포함)
+  Counter sleeps_rejected{0};   // 거부한 잠 요청 수(방에 없음, 집에서 멂)
 
   std::string Summary() const;
 };
@@ -129,6 +136,9 @@ class GameService {
   // 건물을 짓는다. 항상 BuildResponse(결과 코드와 내 인벤토리)를 돌려주고 연결은 유지한다. 성공하면 새 구조물은
   // 같은 틱 끝에 StructureUpdate로 방 전원에게 간다.
   void HandleBuild(const std::shared_ptr<GameClient>& client, const protocol::BuildRequest& request);
+  // 잠자기/깨어나기. 항상 SleepResponse(결과 코드와 내 잠 상태)를 돌려주고 연결은 유지한다. 잠든 사람 목록이 바뀌면
+  // 그 틱 끝에 SleepUpdate가 방 전원에게 간다. 방 안 모두가 잠들면 다음 틱에 밤 정산을 한다(docs/content-day.md).
+  void HandleSleep(const std::shared_ptr<GameClient>& client, const protocol::SleepRequest& request);
 
   // 연결이 끊겼을 때 부른다. 방에 있었다면 나간 것으로 처리하고 남은 사람에게 알린다.
   void OnDisconnect(std::uint64_t client_id);
@@ -136,7 +146,8 @@ class GameService {
   // 고정 간격 타이머를 시작한다. 타이머는 절대 시각으로 예약해 시간이 밀려도 누적 오차가 생기지 않는다.
   void StartTicking();
 
-  // 한 틱을 처리한다: steps번 위치를 계산하고, 방마다 마지막 상태의 스냅샷을 한 번 보낸다.
+  // 한 틱을 처리한다: 방마다 steps번 위치를 계산하고, 밤 정산을 판정해 하고(많아야 한 번), 재생 재시도를 하고,
+  // 보낼 것을 확보한 뒤 보낸다. 정산한 방에는 DayStarted를 가장 먼저, 그다음 스냅샷, 노드, 구조물, 잠든 사람 순서로 보낸다.
   // 타이머가 부르지만 테스트에서도 직접 부를 수 있다.
   void Tick(std::uint32_t steps = 1);
 
@@ -185,6 +196,7 @@ class GameService {
   // 방을 만들 새 코드를 뽑는다. 겹치는 코드가 계속 나오면 빈 문자열.
   std::string NewRoomCode();
   protocol::RoomState MakeRoomState(const Room& room, std::uint32_t your_player_id) const;
+  protocol::DayClock MakeDayClock(const Room& room) const;
   // 사람 한 명을 방에서 빼고 남은 사람에게 알린다. 방이 비면 지운다. 방에 없던 연결이면 아무것도 하지 않는다.
   void RemoveFromRoom(std::uint64_t client_id);
   // room의 사람들 중 except_client_id를 뺀 연결들(살아 있는 것만). 메시지를 보내는 도중에 방이 바뀌어도

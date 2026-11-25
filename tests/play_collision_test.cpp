@@ -1,5 +1,5 @@
-// 이동 충돌 테스트: 구조물과 고갈되지 않은 노드가 플레이어의 이동을 막는가. 소켓도 시계도 없고, 시간은 Step 횟수다.
-// docs/content-roadmap.md 완료 기준 4.
+// 이동 충돌 테스트: 구조물, 고정 물체(시작 집), 고갈되지 않은 노드가 플레이어의 이동을 막는가. 소켓도 시계도 없고,
+// 시간은 Step 횟수다. docs/content-roadmap.md 완료 기준 4, docs/content-day.md 완료 기준 8.
 
 #include <gtest/gtest.h>
 
@@ -31,15 +31,17 @@ void Go(Room& room, std::uint32_t player, std::uint32_t& seq, float dx, float dy
 void RunTicks(Room& room, std::uint32_t ticks) {
   for (std::uint32_t i = 0; i < ticks; ++i) {
     room.world().Step(kDt);
-    room.resources().Advance(room.world().tick());
-    room.structures().Advance(room.world().tick());
+    room.AdvanceResources(room.world().tick());
   }
 }
 
-// 몸(반지름 r)이 어떤 구조물이나 살아 있는 노드와 겹치는가.
+// 몸(반지름 r)이 어떤 구조물, 고정 물체, 살아 있는 노드와 겹치는가.
 bool Overlapping(const Room& room, const PlayConfig& config, const PlayerBody& body) {
   for (const Structure& structure : room.structures().structures()) {
     if (CircleOverlapsRect(body.x, body.y, config.player_radius_cm, structure.Footprint())) return true;
+  }
+  for (const Landmark& landmark : room.landmarks()) {
+    if (CircleOverlapsRect(body.x, body.y, config.player_radius_cm, landmark.Footprint())) return true;
   }
   for (const ResourceNode& node : room.resources().nodes()) {
     if (node.hp > 0 &&
@@ -56,7 +58,7 @@ TEST(CollisionTest, AWallStopsThePlayerCloseToItAndItStaysThere) {
   const PlayConfig config = Empty();
   Room room("111111", config);
   const std::uint32_t player = room.AddMember(1, "alice");  // (2400, 2400)
-  room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f, 0);  // x 2650~2950
+  room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f);  // x 2650~2950
   std::uint32_t seq = 0;
   Go(room, player, seq, 1.0f, 0.0f);
 
@@ -75,7 +77,7 @@ TEST(CollisionTest, ADiagonalMoveSlidesAlongTheWall) {
   const PlayConfig config = Empty();
   Room room("111111", config);
   const std::uint32_t player = room.AddMember(1, "alice");
-  room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f, 0);  // x 2650~2950, y 2250~2550
+  room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f);  // x 2650~2950, y 2250~2550
   std::uint32_t seq = 0;
   Go(room, player, seq, 1.0f, 0.2f);  // 거의 벽 쪽(+x)이지만 조금씩 위(+y)로: 약 14틱에 벽에 닿는다
 
@@ -93,7 +95,7 @@ TEST(CollisionTest, ABlockedAxisDoesNotStopTheFreeAxisAtACorner) {
   const PlayConfig config = Empty();
   Room room("111111", config);
   const std::uint32_t player = room.AddMember(1, "alice");
-  room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f, 0);  // 위쪽 끝 y 2550
+  room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f);  // 위쪽 끝 y 2550
   std::uint32_t seq = 0;
   Go(room, player, seq, 1.0f, 1.0f);
   RunTicks(room, 200);  // 벽을 따라 올라가서 모서리를 지나고 맵 끝까지
@@ -108,10 +110,10 @@ TEST(CollisionTest, NoInputSequenceEverGetsInsideAnObstacle) {
   Room room("111111", config);
   const std::uint32_t player = room.AddMember(1, "alice");
   // 중앙 주위에 집 여러 채
-  room.structures().Add(StructureType::kHouse, 2200.0f, 2800.0f, 0);
-  room.structures().Add(StructureType::kHouse, 2800.0f, 2800.0f, 0);
-  room.structures().Add(StructureType::kHouse, 2800.0f, 2100.0f, 0);
-  room.structures().Add(StructureType::kHouse, 2100.0f, 2100.0f, 0);
+  room.structures().Add(StructureType::kHouse, 2000.0f, 2800.0f);  // 시작 집(x 2300~2700, y 2700~3000)의 양옆
+  room.structures().Add(StructureType::kHouse, 2900.0f, 2800.0f);
+  room.structures().Add(StructureType::kHouse, 2800.0f, 2100.0f);
+  room.structures().Add(StructureType::kHouse, 2100.0f, 2100.0f);
 
   std::mt19937 random(12345);
   std::uniform_real_distribution<float> any(-1.5f, 1.5f);
@@ -135,7 +137,7 @@ TEST(CollisionTest, TheSameInputsGiveTheSameResultsEveryTime) {
     config.rock_count = 20;
     Room room("111111", config);
     const std::uint32_t player = room.AddMember(1, "alice");
-    room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f, 0);
+    room.structures().Add(StructureType::kHouse, 2800.0f, 2400.0f);
     std::mt19937 random(777);
     std::uniform_real_distribution<float> any(-1.0f, 1.0f);
     std::uint32_t seq = 0;
@@ -164,7 +166,6 @@ TEST(CollisionTest, ALiveNodeBlocksUntilItIsDepletedAndThenLetsThePlayerThrough)
   PlayConfig config = Empty();
   config.tree_count = 1;
   config.tree_hp = 1;
-  config.respawn_ticks = 100000;
   Room room("111111", config);
   const std::uint32_t player = room.AddMember(1, "alice");
   const ResourceNode node = room.resources().nodes()[0];
@@ -186,7 +187,7 @@ TEST(CollisionTest, ALiveNodeBlocksUntilItIsDepletedAndThenLetsThePlayerThrough)
   EXPECT_GE(closest, blocked_distance - 1e-3) << "살아 있는 노드의 충돌 반경(40+60)보다 가까이 가지 못한다";
   EXPECT_LE(closest, blocked_distance + 6.0) << "닿을 때까지는 다가간다";
 
-  room.resources().Hit(node.id, room.world().tick());  // 체력 1이라 고갈
+  room.resources().Hit(node.id);  // 체력 1이라 고갈
   // 막힌 채로 노드를 돌아 미끄러졌으므로 노드 중심을 다시 겨냥해서 걸어 들어간다.
   body = room.world().Find(player);
   const double back = std::hypot(node.x - body->x, node.y - body->y);
@@ -204,11 +205,10 @@ TEST(CollisionTest, ARespawningNodeUnderThePlayerDoesNotTrapThem) {
   PlayConfig config = Empty();
   config.tree_count = 1;
   config.tree_hp = 1;
-  config.respawn_ticks = 100000;
   Room room("111111", config);
   const std::uint32_t player = room.AddMember(1, "alice");
   const ResourceNode node = room.resources().nodes()[0];
-  room.resources().Hit(node.id, 0);  // 고갈: 이제 통과할 수 있다
+  room.resources().Hit(node.id);  // 고갈: 이제 통과할 수 있다
 
   // 노드 중심 가까이(20 cm 안)까지 걸어 들어간다.
   std::uint32_t seq = 0;
@@ -224,7 +224,8 @@ TEST(CollisionTest, ARespawningNodeUnderThePlayerDoesNotTrapThem) {
   ASSERT_LT(std::hypot(node.x - body->x, node.y - body->y), 20.0) << "노드 안까지 걸어 들어갔다";
 
   // 노드가 재생한다. 재생 자리는 플레이어 몸을 피해 고르므로 노드는 몸 밖에 나타나고 몸은 갇히지 않는다.
-  room.AdvanceResources(room.world().tick() + 200000);
+  // (밤 정산은 사람을 아침 위치로 옮긴 뒤에 재생하므로, 여기서는 지금 위치를 기준으로 재생 함수를 직접 부른다.)
+  room.resources().RespawnAllDepleted(room.world().tick(), room.MakeSpotBlockers());
   const ResourceNode respawned = *room.resources().Find(node.id);
   ASSERT_GT(respawned.hp, 0u);
   EXPECT_FALSE(Overlapping(room, config, *body)) << "재생 자리가 플레이어 몸과 겹치면 안 된다";
@@ -238,7 +239,7 @@ TEST(CollisionTest, APlayerAlreadyInsideAStructureCanWalkOut) {
   const PlayConfig config = Empty();
   Room room("111111", config);
   const std::uint32_t player = room.AddMember(1, "alice");  // (2400, 2400)
-  room.structures().Add(StructureType::kHouse, 2500.0f, 2400.0f, 0);  // 2350~2650: 몸이 안에 있다
+  room.structures().Add(StructureType::kHouse, 2500.0f, 2400.0f);  // 2350~2650: 몸이 안에 있다
   std::uint32_t seq = 0;
   Go(room, player, seq, -1.0f, 0.0f);
   RunTicks(room, 20);
@@ -249,12 +250,120 @@ TEST(CollisionTest, ALateJoinerIsPlacedOnTheNearestFreeSpotNotInsideTheHouse) {
   const PlayConfig config = Empty();
   Room room("111111", config);
   room.AddMember(1, "alice");
-  room.structures().Add(StructureType::kHouse, 2500.0f, 2500.0f, 0);  // 2350~2650: 모든 시작 칸을 덮는다
+  room.structures().Add(StructureType::kHouse, 2500.0f, 2500.0f);  // 2350~2650: 모든 시작 칸을 덮는다
   for (std::uint64_t id = 2; id <= 4; ++id) {
     const std::uint32_t player = room.AddMember(id, "p" + std::to_string(id));
     const PlayerBody* body = room.world().Find(player);
     EXPECT_TRUE(room.world().IsFree(body->x, body->y)) << "(" << body->x << ", " << body->y << ")";
     EXPECT_LT(std::hypot(body->x - 2500.0, body->y - 2500.0), 500.0) << "중앙에서 멀지 않은 빈 자리";
+  }
+}
+
+// ============================================================ 시작 집 (docs/content-day.md 5.6)
+
+TEST(CollisionTest, NobodyCanWalkIntoTheFarmhouseEvenWithAnInflatedInput) {
+  const PlayConfig config = Empty();
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+  room.AddMember(2, "bob");
+  const std::uint32_t player = room.AddMember(3, "carol");  // 칸 2: (2400, 2600), 시작 집 바로 아래
+  ASSERT_EQ(room.world().Find(player)->y, 2600.0f);
+  std::uint32_t seq = 0;
+  Go(room, player, seq, 0.0f, 10.0f);  // 길이 10: 서버가 1로 줄인다
+  for (int i = 0; i < 100; ++i) {
+    RunTicks(room, 1);
+    const PlayerBody* body = room.world().Find(player);
+    ASSERT_FALSE(Overlapping(room, config, *body)) << i << " (" << body->x << ", " << body->y << ")";
+  }
+  const PlayerBody* body = room.world().Find(player);
+  EXPECT_LE(body->y, 2700.0f - config.player_radius_cm) << "시작 집 아래 면(2700)에서 멈춘다";
+  EXPECT_GT(body->y, 2700.0f - config.player_radius_cm - 7.0f) << "닿을 때까지는 다가간다";
+}
+
+TEST(CollisionTest, TheFarmhouseCornersAndSidesAreSolidFromEveryDirection) {
+  const PlayConfig config = Empty();
+  // 시작 집을 둘러싼 여러 점에서 가운데(2500, 2850)를 겨냥해 걷는다. 모서리 쪽에서 오면 면을 따라 미끄러진다.
+  const float starts[][2] = {{2100.0f, 2500.0f}, {2900.0f, 2500.0f}, {2100.0f, 3200.0f}, {2900.0f, 3200.0f},
+                             {2500.0f, 3300.0f}, {2000.0f, 2850.0f}, {3000.0f, 2850.0f}};
+  for (const auto& start : starts) {
+    Room room("111111", config);
+    const std::uint32_t player = room.AddMember(1, "alice");
+    // 시작점까지는 장애물 없는 길로 걸어간다(먼저 아래쪽으로 내려가 옆으로 돈다).
+    std::uint32_t seq = 0;
+    const auto walk_to = [&](float tx, float ty) {
+      for (int i = 0; i < 400; ++i) {
+        const PlayerBody* body = room.world().Find(player);
+        const double dx = tx - body->x;
+        const double dy = ty - body->y;
+        const double length = std::hypot(dx, dy);
+        if (length < 10.0) break;
+        Go(room, player, seq, static_cast<float>(dx / length), static_cast<float>(dy / length));
+        RunTicks(room, 1);
+      }
+    };
+    walk_to(start[0] < 2500.0f ? 2000.0f : 3000.0f, 2400.0f);
+    walk_to(start[0] < 2500.0f ? 2000.0f : 3000.0f, start[1]);
+    walk_to(start[0], start[1]);
+    Go(room, player, seq, (2500.0f - room.world().Find(player)->x) * 10.0f,
+       (2850.0f - room.world().Find(player)->y) * 10.0f);
+    for (int i = 0; i < 120; ++i) {
+      RunTicks(room, 1);
+      const PlayerBody* body = room.world().Find(player);
+      ASSERT_FALSE(Overlapping(room, config, *body))
+          << "시작점 (" << start[0] << ", " << start[1] << ") 틱 " << i << " (" << body->x << ", " << body->y << ")";
+    }
+  }
+}
+
+TEST(CollisionTest, AllFourStartSlotsAreFreeAndUnmovedWithTheFarmhouse) {
+  const PlayConfig config;  // 기본 설정 그대로(시작 집 있음)
+  Room room("111111", config);
+  ASSERT_EQ(room.landmarks().size(), 1u);
+  const float expected[][2] = {{2400.0f, 2400.0f}, {2600.0f, 2400.0f}, {2400.0f, 2600.0f}, {2600.0f, 2600.0f}};
+  for (std::uint64_t id = 1; id <= 4; ++id) {
+    const std::uint32_t player = room.AddMember(id, "p" + std::to_string(id));
+    const PlayerBody* body = room.world().Find(player);
+    EXPECT_TRUE(room.world().IsFree(body->x, body->y));
+    EXPECT_EQ(body->x, expected[id - 1][0]) << "시작 집이 시작 칸을 밀어내지 않는다";
+    EXPECT_EQ(body->y, expected[id - 1][1]);
+  }
+}
+
+TEST(CollisionTest, WithAZeroWidthFarmhouseThePlayerWalksThroughItsSpot) {
+  PlayConfig config = Empty();
+  config.farmhouse_width_cm = 0.0f;
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+  room.AddMember(2, "bob");
+  const std::uint32_t player = room.AddMember(3, "carol");  // (2400, 2600)
+  std::uint32_t seq = 0;
+  Go(room, player, seq, 0.0f, 1.0f);
+  RunTicks(room, 30);  // 18 cm x 30 = 540 cm
+  EXPECT_GT(room.world().Find(player)->y, 3000.0f) << "시작 집이 없으면 그 자리를 지나간다";
+}
+
+TEST(CollisionTest, RespawnedNodesNeverLandOnTheFarmhouse) {
+  PlayConfig config = Empty();  // 구역 제한이 없어 노드가 중앙 가까이에도 놓일 수 있다
+  config.tree_count = 30;
+  config.rock_count = 20;
+  config.tree_hp = 1;
+  config.rock_hp = 1;
+  config.spawn_clear_radius_cm = 0.0f;
+  Room room("111111", config);
+  room.AddMember(1, "alice");
+  const Rect farmhouse = room.landmarks()[0].Footprint();
+  const auto check = [&](int round) {
+    for (const ResourceNode& node : room.resources().nodes()) {
+      ASSERT_FALSE(node.hp > 0 && CircleOverlapsRect(node.x, node.y, config.node_collision_radius_cm, farmhouse))
+          << "라운드 " << round << " 노드 " << node.id << " (" << node.x << ", " << node.y << ")";
+    }
+  };
+  check(-1);  // 처음 배치도 시작 집을 피한다
+  for (int round = 0; round < 60; ++round) {
+    for (const ResourceNode& node : room.resources().nodes()) room.resources().Hit(node.id);
+    RunTicks(room, 1);
+    room.RunNight(room.world().tick(), false);
+    check(round);
   }
 }
 

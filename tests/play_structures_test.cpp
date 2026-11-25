@@ -1,5 +1,6 @@
 // 집 짓기의 순수 로직 테스트: StructureSet(건설 진행)과 Room::Build(거리, 겹침, 비용, 판정 순서).
 // 소켓도 시계도 없다. 시간은 월드 틱으로만 흐른다. docs/content-roadmap.md 완료 기준 1~3, 5~6.
+// 완공은 틱이 아니라 밤 정산(CompleteAll)에 일어난다(docs/content-day.md 5.4). 시작 집(고정 물체)은 기본 설정 그대로 있다.
 
 #include <gtest/gtest.h>
 
@@ -27,7 +28,6 @@ PlayConfig OpenField() {
 void Tick(Room& room, std::uint32_t ticks) {
   for (std::uint32_t i = 0; i < ticks; ++i) {
     room.world().Step(kDt);
-    room.structures().Advance(room.world().tick());
   }
 }
 
@@ -39,38 +39,42 @@ void Prepare(Room& room, std::uint32_t wood = 100, std::uint32_t stone = 100) {
 
 // ============================================================ StructureSet
 
-TEST(StructureSetTest, NumbersFromOneStartsBuildingAndCompletesAtTheExactTick) {
+TEST(StructureSetTest, NumbersFromOneStartBuildingAndAllCompleteAtTheNight) {
   PlayConfig config;
   StructureSet set(config);
-  EXPECT_EQ(set.Add(StructureType::kHouse, 1000.0f, 1000.0f, 50), 1u);
-  EXPECT_EQ(set.Add(StructureType::kHouse, 2000.0f, 2000.0f, 60), 2u);
+  EXPECT_EQ(set.Add(StructureType::kHouse, 1000.0f, 1000.0f), 1u);
+  EXPECT_EQ(set.Add(StructureType::kHouse, 2000.0f, 2000.0f), 2u);
 
   const Structure* first = set.Find(1);
   ASSERT_NE(first, nullptr);
   EXPECT_EQ(first->state, StructureState::kBuilding);
-  EXPECT_EQ(first->ready_tick, 50u + config.build_ticks);
+  EXPECT_EQ(first->ready_tick, 0u) << "건설 중이면 0(다음 밤 정산에 완료)";
   EXPECT_EQ(first->width, config.house_width_cm);
   EXPECT_EQ(first->height, config.house_height_cm);
+  EXPECT_EQ(set.building_count(), 2u);
 
-  EXPECT_EQ(set.Advance(149), 0u) << "99틱 뒤에는 아직";
-  EXPECT_EQ(set.Find(1)->state, StructureState::kBuilding);
-  EXPECT_EQ(set.Advance(150), 1u) << "100틱 뒤에 첫 번째 완료";
+  EXPECT_EQ(set.CompleteAll(150), 2u) << "밤 정산에 건설 중인 것이 모두 완료";
   EXPECT_EQ(set.Find(1)->state, StructureState::kComplete);
-  EXPECT_EQ(set.Find(2)->state, StructureState::kBuilding);
-  EXPECT_EQ(set.Advance(160), 1u);
-  EXPECT_EQ(set.Advance(1000), 0u) << "완료한 것을 다시 세지 않는다";
+  EXPECT_EQ(set.Find(2)->state, StructureState::kComplete);
+  EXPECT_EQ(set.Find(1)->ready_tick, 150u) << "완료되면 완료된 틱";
+  EXPECT_EQ(set.building_count(), 0u);
+
+  EXPECT_EQ(set.Add(StructureType::kHouse, 3000.0f, 3000.0f), 3u);
+  EXPECT_EQ(set.CompleteAll(1000), 1u) << "이미 완료한 것은 다시 세지 않는다";
+  EXPECT_EQ(set.Find(1)->ready_tick, 150u) << "이미 완료한 것의 완료 틱은 그대로";
+  EXPECT_EQ(set.Find(3)->ready_tick, 1000u);
+  EXPECT_EQ(set.CompleteAll(2000), 0u);
   EXPECT_EQ(set.Find(0), nullptr);
-  EXPECT_EQ(set.Find(3), nullptr);
+  EXPECT_EQ(set.Find(4), nullptr);
 }
 
 TEST(StructureSetTest, ChangesAreCollectedOnceSortedAndClearedWithTheLatestState) {
   PlayConfig config;
-  config.build_ticks = 10;
   StructureSet set(config);
-  set.Add(StructureType::kHouse, 1000.0f, 1000.0f, 0);
-  set.Add(StructureType::kHouse, 2000.0f, 2000.0f, 0);
+  set.Add(StructureType::kHouse, 1000.0f, 1000.0f);
+  set.Add(StructureType::kHouse, 2000.0f, 2000.0f);
   EXPECT_TRUE(set.HasChanges());
-  set.Advance(10);  // 같은 틱 안에서 "생김"과 "완료"가 겹쳐도 한 번만, 마지막 상태로
+  set.CompleteAll(10);  // 같은 틱 안에서 "생김"과 "완료"가 겹쳐도 한 번만, 마지막 상태로
 
   const auto changes = set.TakeChanges();
   ASSERT_EQ(changes.size(), 2u);
@@ -83,14 +87,27 @@ TEST(StructureSetTest, ChangesAreCollectedOnceSortedAndClearedWithTheLatestState
 
 TEST(StructureSetTest, CompletionIsReportedAsAChange) {
   PlayConfig config;
-  config.build_ticks = 5;
   StructureSet set(config);
-  set.Add(StructureType::kHouse, 1000.0f, 1000.0f, 0);
+  set.Add(StructureType::kHouse, 1000.0f, 1000.0f);
   set.TakeChanges();  // 생김 알림은 이미 나갔다고 치고 비운다
-  EXPECT_EQ(set.Advance(5), 1u);
+  EXPECT_EQ(set.CompleteAll(5), 1u);
   const auto changes = set.TakeChanges();
   ASSERT_EQ(changes.size(), 1u);
   EXPECT_EQ(changes[0].state, StructureState::kComplete);
+  EXPECT_EQ(changes[0].ready_tick, 5u);
+}
+
+TEST(StructureSetTest, ARestoredBuildingStaysBuildingWhateverItsOldRemainingTicks) {
+  PlayConfig config;
+  StructureSet set(config);
+  EXPECT_EQ(set.Restore(StructureType::kHouse, 1000.0f, 1000.0f, StructureState::kBuilding, 40), 1u);
+  EXPECT_EQ(set.Restore(StructureType::kHouse, 2000.0f, 2000.0f, StructureState::kComplete, 40), 2u);
+  EXPECT_EQ(set.Find(1)->state, StructureState::kBuilding);
+  EXPECT_EQ(set.Find(1)->ready_tick, 0u);
+  EXPECT_EQ(set.Find(2)->state, StructureState::kComplete);
+  EXPECT_EQ(set.Find(2)->ready_tick, 40u);
+  EXPECT_FALSE(set.HasChanges()) << "복원은 바뀜으로 기록하지 않는다";
+  EXPECT_EQ(set.CompleteAll(41), 1u) << "복원한 건설 중인 집은 다음 밤에 완료";
 }
 
 // ============================================================ Room::Build
@@ -119,17 +136,22 @@ TEST(RoomBuildTest, BuildingSpendsTheExactCostAndCreatesABuildingStructureOnTheG
   EXPECT_EQ(built->x, 2600.0f);
   EXPECT_EQ(built->y, 2400.0f);
   EXPECT_EQ(built->state, StructureState::kBuilding);
-  EXPECT_EQ(built->ready_tick, 7u + 100u) << "건설한 틱(7) + build_ticks";
+  EXPECT_EQ(built->ready_tick, 0u) << "건설 중이면 완공 시각을 정하지 않는다";
 }
 
-TEST(RoomBuildTest, TheBuildingCompletesAfterExactlyTheConfiguredTicks) {
+TEST(RoomBuildTest, TheBuildingStaysUnderConstructionAllDayAndCompletesAtTheNight) {
   Room room("111111", OpenField());
   Prepare(room);
   ASSERT_EQ(room.Build(1, 0, 2600.0f, 2400.0f).status, BuildStatus::kOk);
-  Tick(room, 99);
+  Tick(room, 100);  // 옛 완공 시각(build_ticks 100)
   EXPECT_EQ(room.structures().Find(1)->state, StructureState::kBuilding);
-  Tick(room, 1);
+  Tick(room, 5000);
+  EXPECT_EQ(room.structures().Find(1)->state, StructureState::kBuilding) << "밤 정산 전에는 하루 종일 건설 중";
+  const std::uint64_t tick = room.world().tick();
+  const NightReport report = room.RunNight(tick, false);
+  EXPECT_EQ(report.completed, 1u);
   EXPECT_EQ(room.structures().Find(1)->state, StructureState::kComplete);
+  EXPECT_EQ(room.structures().Find(1)->ready_tick, tick);
 }
 
 TEST(RoomBuildTest, OneUnitShortOfTheCostIsRejectedAndTheExactCostIsAccepted) {
@@ -202,7 +224,7 @@ TEST(RoomBuildTest, StructuresMayTouchButNotOverlap) {
   ASSERT_EQ(room.Build(1, 0, 2600.0f, 2400.0f).status, BuildStatus::kOk);  // 2450~2750
   EXPECT_EQ(room.Build(1, 0, 2800.0f, 2400.0f).status, BuildStatus::kBlocked) << "50 cm 겹침";
   EXPECT_EQ(room.Build(1, 0, 2600.0f, 2400.0f).status, BuildStatus::kBlocked) << "같은 자리";
-  EXPECT_EQ(room.Build(1, 0, 2600.0f, 2700.0f).status, BuildStatus::kOk) << "위아래로 면이 닿기만 함(2550~2850 아래 2250~2550)";
+  EXPECT_EQ(room.Build(1, 0, 2600.0f, 2100.0f).status, BuildStatus::kOk) << "위아래로 면이 닿기만 함(2250~2550 아래 1950~2250)";
 }
 
 TEST(RoomBuildTest, AStructureCannotBeBuiltOnTopOfAnyPlayerIncludingTheBuilder) {
@@ -241,7 +263,7 @@ TEST(RoomBuildTest, LiveNodesBlockBuildingButDepletedNodesDoNot) {
   const float y = std::round(node.y / grid) * grid;
 
   EXPECT_EQ(room.Build(1, 0, x, y).status, BuildStatus::kBlocked) << "살아 있는 노드 위";
-  room.resources().Hit(node.id, room.world().tick());  // 체력 1이라 고갈
+  room.resources().Hit(node.id);  // 체력 1이라 고갈
   EXPECT_EQ(room.Build(1, 0, x, y).status, BuildStatus::kOk) << "고갈된 노드는 막지 않는다";
 }
 
@@ -290,8 +312,9 @@ TEST(RoomBuildTest, WhenTwoPlayersBuildOnTheSameSpotInTheSameTickExactlyOneSucce
   Prepare(room);
   room.AddMember(2, "bob");
   room.GrantResources(2, 100, 100);
-  const BuildOutcome first = room.Build(1, 0, 2500.0f, 2800.0f);
-  const BuildOutcome second = room.Build(2, 0, 2500.0f, 2800.0f);
+  // (2500, 2100): 두 사람 몸과 시작 집(2700~3000)을 모두 피한 자리
+  const BuildOutcome first = room.Build(1, 0, 2500.0f, 2100.0f);
+  const BuildOutcome second = room.Build(2, 0, 2500.0f, 2100.0f);
   EXPECT_EQ(first.status, BuildStatus::kOk);
   EXPECT_EQ(second.status, BuildStatus::kBlocked);
   EXPECT_EQ(room.structures().size(), 1u);
@@ -325,10 +348,89 @@ TEST(RoomBuildTest, TheInventoryIsLostWhenLeavingAndBuildingKeepsStandingForTheO
   Room room("111111", OpenField());
   Prepare(room);
   room.AddMember(2, "bob");
-  ASSERT_EQ(room.Build(1, 0, 2600.0f, 2900.0f).status, BuildStatus::kOk);
+  ASSERT_EQ(room.Build(1, 0, 2600.0f, 2100.0f).status, BuildStatus::kOk);
   room.RemoveMember(1);
   EXPECT_EQ(room.structures().size(), 1u) << "지은 사람이 나가도 건물은 남는다";
-  EXPECT_EQ(room.Build(1, 0, 2600.0f, 2900.0f).status, BuildStatus::kNotInRoom);
+  EXPECT_EQ(room.Build(1, 0, 2600.0f, 2100.0f).status, BuildStatus::kNotInRoom);
+}
+
+// ============================================================ 시작 집과 잠 (docs/content-day.md 5.6, 5.2)
+
+TEST(RoomBuildTest, NothingCanBeBuiltOverlappingTheFarmhouseButTouchingIsAllowed) {
+  PlayConfig config = OpenField();
+  config.build_grid_cm = 50.0f;
+  // 시작 집 발자국 x 2300~2700, y 2700~3000. 집 300 x 300.
+  struct Case {
+    float x;
+    float y;
+    bool ok;
+  };
+  // 내 몸은 (2400, 2400)이라 아래쪽 경우는 x = 2600에서 시험한다(몸과 겹치지 않게).
+  for (const Case c : {Case{2500.0f, 2850.0f, false},   // 한가운데
+                       Case{2150.0f, 2850.0f, true},    // 왼쪽 면에 닿기만 함(2000~2300)
+                       Case{2200.0f, 2850.0f, false},   // 왼쪽 50 cm 겹침
+                       Case{2850.0f, 2850.0f, true},    // 오른쪽 면에 닿음(2700~3000)
+                       Case{2800.0f, 2850.0f, false},   // 오른쪽 50 cm 겹침
+                       Case{2500.0f, 3150.0f, true},    // 위쪽 면에 닿음(3000~3300)
+                       Case{2500.0f, 3100.0f, false},   // 위쪽 50 cm 겹침
+                       Case{2600.0f, 2550.0f, true},    // 아래쪽 면에 닿음(2400~2700)
+                       Case{2600.0f, 2600.0f, false}}) {  // 아래쪽 50 cm 겹침
+    Room room("111111", config);
+    room.AddMember(1, "alice");
+    room.GrantResources(1, 100, 100);
+    const BuildStatus status = room.Build(1, 0, c.x, c.y).status;
+    EXPECT_EQ(status, c.ok ? BuildStatus::kOk : BuildStatus::kBlocked) << c.x << ", " << c.y;
+    if (!c.ok) {
+      EXPECT_EQ(room.FindByClient(1)->wood, 100u) << "막히면 비용을 받지 않는다";
+    }
+  }
+}
+
+TEST(RoomBuildTest, AFarmhouseOfZeroWidthIsNotThere) {
+  PlayConfig config = OpenField();
+  config.farmhouse_width_cm = 0.0f;
+  Room room("111111", config);
+  Prepare(room);
+  EXPECT_TRUE(room.landmarks().empty());
+  EXPECT_EQ(room.Build(1, 0, 2500.0f, 2900.0f).status, BuildStatus::kOk) << "시작 집이 없으면 그 자리에 지을 수 있다";
+  Room with("222222", OpenField());
+  Prepare(with);
+  ASSERT_EQ(with.landmarks().size(), 1u);
+  EXPECT_EQ(with.landmarks()[0].kind, LandmarkKind::kFarmhouse);
+  EXPECT_EQ(with.Build(1, 0, 2500.0f, 2900.0f).status, BuildStatus::kBlocked);
+}
+
+TEST(RoomBuildTest, TheFarmhouseDoesNotCountTowardsTheStructureLimitOrTakeANumber) {
+  PlayConfig config = OpenField();
+  config.max_structures = 1;
+  Room room("111111", config);
+  Prepare(room);
+  EXPECT_EQ(room.structures().size(), 0u) << "시작 집은 구조물이 아니다";
+  const BuildOutcome out = room.Build(1, 0, 2600.0f, 2100.0f);
+  ASSERT_EQ(out.status, BuildStatus::kOk) << "상한 1에서도 첫 집을 지을 수 있다";
+  EXPECT_EQ(out.structure_id, 1u) << "구조물 번호는 1부터";
+}
+
+TEST(RoomBuildTest, ASleepingPlayerCannotBuildAndNothingChanges) {
+  PlayConfig config = OpenField();
+  config.sleep_range_cm = 100000.0f;  // 어디서든 잘 수 있게
+  config.max_structures = 1;
+  Room room("111111", config);
+  Prepare(room);
+  ASSERT_EQ(room.Sleep(1, true).status, SleepStatus::kOk);
+  const BuildOutcome out = room.Build(1, 0, 2600.0f, 2100.0f);
+  EXPECT_EQ(out.status, BuildStatus::kSleeping);
+  EXPECT_EQ(out.wood, 100u) << "거부 응답도 현재 인벤토리를 담는다";
+  EXPECT_EQ(room.structures().size(), 0u);
+  EXPECT_EQ(room.FindByClient(1)->wood, 100u);
+  EXPECT_EQ(room.FindByClient(1)->stone, 100u);
+  // 판정 순서: 방에 없음 -> 잠듦 -> 종류 -> ...
+  EXPECT_EQ(room.Build(99, 7, 2600.0f, 2100.0f).status, BuildStatus::kNotInRoom);
+  EXPECT_EQ(room.Build(1, 7, 99999.0f, 0.0f).status, BuildStatus::kSleeping) << "잠듦이 종류보다 먼저";
+  ASSERT_EQ(room.Sleep(1, false).status, SleepStatus::kOk);
+  EXPECT_EQ(room.Build(1, 0, 2600.0f, 2100.0f).status, BuildStatus::kOk) << "깨어나면 지을 수 있다";
+  ASSERT_EQ(room.Sleep(1, true).status, SleepStatus::kOk);
+  EXPECT_EQ(room.Build(1, 0, 2000.0f, 2100.0f).status, BuildStatus::kSleeping) << "잠듦이 상한보다 먼저";
 }
 
 // ============================================================ 건설 구역 (맵 중앙 정사각형 안에만 지을 수 있다)

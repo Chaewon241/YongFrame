@@ -824,7 +824,7 @@ server::ServerConfig FarmServerConfig(std::uint64_t flush_ticks = 100000) {
   config.play.gather_cooldown_ticks = 0;
   config.play.tree_hp = 1000;
   config.play.rock_hp = 1000;
-  config.play.build_ticks = 10;
+  config.play.bench_day_ticks = 10;  // 0.5초마다 밤 정산(완공)
   config.play.farm_flush_interval_ticks = flush_ticks;
   return config;
 }
@@ -870,7 +870,7 @@ TEST_F(MySqlFarmServerTest, TheFarmSurvivesAServerRestart) {
     code = created.state().room_code();
     for (int i = 0; i < 26; ++i) ASSERT_EQ(Gather(*alice, 1).result(), protocol::GAME_OK);   // 목재 26
     for (int i = 0; i < 11; ++i) ASSERT_EQ(Gather(*alice, 31).result(), protocol::GAME_OK);  // 석재 11
-    ASSERT_EQ(Build(*alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);                  // 집(목재 20, 석재 10)
+    ASSERT_EQ(Build(*alice, 2400.0f, 2000.0f).result(), protocol::GAME_OK);                  // 집(목재 20, 석재 10)
     protocol::StructureUpdate update;
     ASSERT_TRUE(WaitStructureUpdate(*alice, update, [](const protocol::StructureUpdate& u) {
       return u.structures_size() == 1 && u.structures(0).state() == protocol::STRUCTURE_COMPLETE;

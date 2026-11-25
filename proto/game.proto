@@ -29,6 +29,9 @@ enum GameResult {
   // 농장 저장 (docs/persistence.md)
   GAME_LOGIN_REQUIRED = 19;         // 농장 방에는 로그인한 사람만 입장할 수 있다
   GAME_STORAGE_UNAVAILABLE = 20;    // 농장을 불러오거나 만들지 못함(저장소 오류, 시간 초과)
+  // 하루와 잠 (docs/content-day.md)
+  GAME_SLEEP_TOO_FAR = 21;          // 시작 집이나 완공된 집 앞(sleep_range_cm 안)이 아니다
+  GAME_SLEEPING = 22;               // 잠든 상태에서는 채집과 건설을 할 수 없다
 }
 
 enum StructureType {
@@ -49,7 +52,7 @@ message Structure {
   float width = 5;          // cm (x 방향)
   float height = 6;         // cm (y 방향)
   StructureState state = 7;
-  uint64 ready_tick = 8;    // 건설 중이면 완료되는 틱, 완료되었으면 완료된 틱
+  uint64 ready_tick = 8;    // 건설 중이면 0(다음 밤 정산에 완료), 완료되었으면 완료된 틱 (docs/content-day.md에서 뜻이 바뀜)
 }
 
 message PlayerInfo {
@@ -72,6 +75,29 @@ message ResourceNode {
   uint32 max_hp = 6;
 }
 
+// 방의 시계 (docs/content-day.md). 클라이언트는 받은 스냅샷 틱으로 elapsed = tick - day_start_tick을 계산해 시각을 그린다.
+// 게임 시각(자정부터 센 분) = day_start_minute + elapsed / ticks_per_game_minute.
+message DayClock {
+  uint32 day = 1;                    // 1부터
+  int64 day_start_tick = 2;          // 그날이 시작된 월드 틱. 저장된 농장을 열면 음수일 수 있다
+  uint32 day_length_ticks = 3;       // 하루의 틱 수 (기본 12000)
+  uint32 ticks_per_game_minute = 4;  // 기본 10
+  uint32 day_start_minute = 5;       // 기본 360 (06:00)
+}
+
+enum LandmarkKind {
+  LANDMARK_FARMHOUSE = 0;  // 시작 집. 조각 4에서 출하 상자, 상점이 더해진다
+}
+
+// 모든 방의 같은 자리에 있는 고정 물체. 축에 정렬된 직사각형이고 (x, y)는 중심이다.
+message Landmark {
+  LandmarkKind kind = 1;
+  float x = 2;
+  float y = 3;
+  float width = 4;
+  float height = 5;
+}
+
 // 방 전체의 현재 상태. 만들기/입장 응답에 담긴다.
 message RoomState {
   string room_code = 1;          // 숫자 6자리 문자열 (앞자리가 0일 수 있음)
@@ -80,6 +106,9 @@ message RoomState {
   repeated PlayerInfo players = 4;  // 나를 포함한 현재 접속자 (입장한 순서)
   repeated ResourceNode nodes = 5;  // 방의 모든 자원 노드와 현재 체력
   repeated Structure structures = 6;  // 방의 모든 구조물(건설 중 포함)
+  DayClock clock = 7;                 // 방의 시계(늦게 들어온 사람도 지금 시각을 안다)
+  repeated Landmark landmarks = 8;    // 고정 물체(시작 집)
+  repeated uint32 sleeping_player_ids = 9;  // 지금 잠든 사람(입장한 순서)
 }
 
 message CreateRoomRequest { string nickname = 1; }
@@ -180,4 +209,28 @@ message StructureUpdate {
 message WorldSnapshot {
   uint64 tick = 1;
   repeated PlayerState players = 2;
+}
+
+// ---- 하루와 잠 (docs/content-day.md) ----
+
+// 잔다(true) 또는 깬다(false). 잘 수 있는 곳은 시작 집이나 완공된 집 앞(sleep_range_cm 안)이다.
+message SleepRequest { bool sleep = 1; }
+// 결과와 요청 뒤의 내 잠 상태(성공/실패 모두 현재 값).
+message SleepResponse {
+  GameResult result = 1;
+  bool sleeping = 2;
+}
+
+// 잠든 사람 목록이 바뀐 틱에만 방 전원(본인 포함)에게 보낸다. 현재 잠든 사람 전부(입장한 순서).
+message SleepUpdate {
+  uint64 tick = 1;
+  repeated uint32 sleeping_player_ids = 2;
+}
+
+// 밤 정산이 끝나고 새 날이 시작되었다. 그 틱에 방 전원이 다른 메시지보다 먼저 받는다.
+// 클라이언트는 이것을 받으면 보간을 초기화한다(아침 위치로의 순간이동을 미끄러지듯 그리지 않게).
+message DayStarted {
+  uint64 tick = 1;
+  DayClock clock = 2;
+  bool forced = 3;  // 02:00 강제 정산이면 true, 모두 잠들어 넘어갔으면 false
 }

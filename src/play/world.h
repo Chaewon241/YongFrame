@@ -8,6 +8,7 @@
 // 입력은 "마지막 입력이 계속 유효"하다. 정지하려면 방향 (0, 0)을 보내야 한다.
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "play/geometry.h"
@@ -33,6 +34,7 @@ enum class InputResult {
   kInvalid,        // NaN 또는 무한대라 무시함
   kStale,          // 번호가 이전 입력 이하라 무시함
   kUnknownPlayer,  // 이 월드에 없는 플레이어
+  kSleeping,       // 잠든 사람의 입력이라 통째로 무시함(Room이 판정한다)
 };
 
 class World {
@@ -47,6 +49,10 @@ class World {
     structures_ = structures;
   }
 
+  // 움직이지 않는 직사각형 장애물(시작 집 같은 고정 물체)을 정한다. 구조물처럼 이동을 막는다.
+  void SetFixedObstacles(std::vector<Rect> rects) { fixed_ = std::move(rects); }
+  const std::vector<Rect>& fixed_obstacles() const { return fixed_; }
+
   // 반지름 r인 몸이 (x, y)에 있어도 맵 안이고 장애물과 겹치지 않는가.
   bool IsFree(float x, float y) const;
 
@@ -54,6 +60,12 @@ class World {
   // 그 자리가 장애물(구조물, 노드)로 막혀 있으면 가장 가까운 빈 자리(격자 100 cm 단위로 바깥으로 찾음)에 둔다.
   void AddPlayer(std::uint32_t id, std::uint32_t slot);
   void RemovePlayer(std::uint32_t id);
+
+  // 플레이어의 이동 방향을 (0, 0)으로 한다(잠들 때). 입력 번호는 그대로다. 없는 플레이어면 false.
+  bool Stop(std::uint32_t id);
+  // 플레이어를 칸 번호의 시작 위치로 옮기고 방향을 (0, 0)으로 한다(밤 정산의 아침 위치). 막혀 있으면 AddPlayer와 같은
+  // "가장 가까운 빈 자리" 규칙을 쓴다. 입력 번호(last_input_seq)는 그대로다. 없는 플레이어면 false.
+  bool MoveToSpawn(std::uint32_t id, std::uint32_t slot);
 
   // 이동 방향 입력을 반영한다. 길이가 1을 넘으면 1로 줄인다(속도 조작 방지).
   InputResult SetInput(std::uint32_t id, std::uint32_t sequence, float dir_x, float dir_y);
@@ -79,6 +91,9 @@ class World {
   };
 
   PlayerBody* FindMutable(std::uint32_t id);
+  // 칸 번호의 시작 위치(막혀 있으면 가장 가까운 빈 자리)를 x, y에 넣는다.
+  void SpawnPosition(std::uint32_t slot, float& x, float& y) const;
+  bool HasObstacles() const { return structures_ != nullptr || resources_ != nullptr || !fixed_.empty(); }
   // (x, y)의 몸이 겹치는 obstacle이 있는가(ignore인 것은 건너뛴다).
   bool Blocked(double x, double y, const std::vector<Obstacle>& obstacles) const;
   // 중심 (x, y)에서 reach 안에 닿을 수 있는 장애물을 모은다.
@@ -89,6 +104,7 @@ class World {
   std::uint64_t tick_ = 0;
   const ResourceField* resources_ = nullptr;
   const StructureSet* structures_ = nullptr;
+  std::vector<Rect> fixed_;        // 고정 물체(시작 집)
   std::vector<Obstacle> scratch_;  // Step이 재사용하는 임시 목록(할당을 줄인다)
 };
 

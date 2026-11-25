@@ -21,7 +21,7 @@ bool StructureSet::FootprintOf(StructureType type, float& width, float& height) 
   return false;
 }
 
-std::uint32_t StructureSet::Add(StructureType type, float x, float y, std::uint64_t tick) {
+std::uint32_t StructureSet::Add(StructureType type, float x, float y) {
   Structure structure;
   structure.id = static_cast<std::uint32_t>(structures_.size()) + 1;
   structure.type = type;
@@ -29,15 +29,14 @@ std::uint32_t StructureSet::Add(StructureType type, float x, float y, std::uint6
   structure.y = y;
   FootprintOf(type, structure.width, structure.height);
   structure.state = StructureState::kBuilding;
-  structure.ready_tick = tick + config_.build_ticks;
+  structure.ready_tick = 0;  // 다음 밤 정산에 완료
   structures_.push_back(structure);
   ++building_count_;
   changed_ids_.push_back(structure.id);
   return structure.id;
 }
 
-std::uint32_t StructureSet::Restore(StructureType type, float x, float y, StructureState state,
-                                    std::uint64_t remaining_ticks, std::uint64_t tick) {
+std::uint32_t StructureSet::Restore(StructureType type, float x, float y, StructureState state, std::uint64_t tick) {
   Structure structure;
   structure.type = type;
   if (!FootprintOf(type, structure.width, structure.height)) {
@@ -47,7 +46,7 @@ std::uint32_t StructureSet::Restore(StructureType type, float x, float y, Struct
   structure.x = x;
   structure.y = y;
   structure.state = state;
-  structure.ready_tick = state == StructureState::kBuilding ? tick + remaining_ticks : tick;
+  structure.ready_tick = state == StructureState::kBuilding ? 0 : tick;
   structures_.push_back(structure);
   if (state == StructureState::kBuilding) {
     ++building_count_;
@@ -55,14 +54,15 @@ std::uint32_t StructureSet::Restore(StructureType type, float x, float y, Struct
   return structure.id;
 }
 
-std::uint32_t StructureSet::Advance(std::uint64_t tick) {
+std::uint32_t StructureSet::CompleteAll(std::uint64_t tick) {
   if (building_count_ == 0) {
     return 0;
   }
   std::uint32_t completed = 0;
   for (auto& structure : structures_) {
-    if (structure.state == StructureState::kBuilding && tick >= structure.ready_tick) {
+    if (structure.state == StructureState::kBuilding) {
       structure.state = StructureState::kComplete;
+      structure.ready_tick = tick;
       --building_count_;
       ++completed;
       if (std::find(changed_ids_.begin(), changed_ids_.end(), structure.id) == changed_ids_.end()) {

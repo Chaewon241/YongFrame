@@ -114,6 +114,21 @@ class GameServiceTest : public ::testing::Test {
     return client->Last<protocol::LeaveRoomResponse>(MessageId::kLeaveRoomResponse);
   }
 
+  protocol::SleepResponse Sleep(const ClientPtr& client, bool sleep) {
+    protocol::SleepRequest request;
+    request.set_sleep(sleep);
+    service_.HandleSleep(client, request);
+    return client->Last<protocol::SleepResponse>(MessageId::kSleepResponse);
+  }
+
+  // 칸 0, 1(시작 집에서 300 cm)의 사람을 시작 집 앞으로 걷게 한다: 9틱(162 cm) 북쪽으로 가서 멈춘다.
+  // 입력 번호는 seq, seq + 1을 쓴다.
+  void WalkToFarmhouse(const std::vector<ClientPtr>& walkers, std::uint32_t seq = 1000) {
+    for (const auto& client : walkers) Move(client, seq, 0.0f, 1.0f);
+    for (int i = 0; i < 9; ++i) service_.Tick();
+    for (const auto& client : walkers) Move(client, seq + 1, 0.0f, 0.0f);
+  }
+
   void Move(const ClientPtr& client, std::uint32_t seq, float x, float y) {
     protocol::MoveInput input;
     input.set_sequence(seq);
@@ -887,27 +902,33 @@ TEST_F(GatherServiceTest, ALateJoinerReceivesTheCurrentNodeHealth) {
   EXPECT_EQ(joined.state().nodes(1).hp(), 1u) << "그대로인 노드";
 }
 
-TEST_F(GatherServiceTest, DepletedNodeComesBackAfterExactlyTheRespawnTicksAndTheRoomIsTold) {
+TEST_F(GatherServiceTest, ADepletedNodeStaysDepletedUntilTheNightAndThenTheRoomIsTold) {
   TwoPlayers();
+  auto alice = clients_[1];
   auto bob = clients_[2];
-  ASSERT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_OK);
+  ASSERT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_OK);
   service_.Tick();  // 1틱: 고갈 알림
   ASSERT_EQ(bob->CountOf(MessageId::kResourceUpdate), 1u);
 
-  const PlayConfig config = service_.config();
-  // 고갈은 월드 틱 0에서 일어났으므로 600틱째에 재생한다. 위에서 1틱 지났으니 598틱을 더 돌리면 599틱.
-  for (std::uint32_t i = 0; i < config.respawn_ticks - 2; ++i) service_.Tick();
-  EXPECT_EQ(bob->CountOf(MessageId::kResourceUpdate), 1u) << "599틱까지는 알림이 없다";
-  EXPECT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_NODE_DEPLETED);
-  service_.Tick();  // 600틱
+  for (int i = 0; i < 600; ++i) service_.Tick();  // 옛 재생 시각(600틱)이 지나도
+  EXPECT_EQ(bob->CountOf(MessageId::kResourceUpdate), 1u) << "밤 정산 전에는 재생 알림이 없다";
+  EXPECT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_NODE_DEPLETED);
+  EXPECT_EQ(service_.stats().nodes_respawned.load(), 0u);
+
+  WalkToFarmhouse({alice, bob});
+  ASSERT_EQ(Sleep(alice, true).result(), protocol::GAME_OK);
+  ASSERT_EQ(Sleep(bob, true).result(), protocol::GAME_OK);
+  service_.Tick();  // 모두 잠든 다음 틱에 밤 정산
+  ASSERT_EQ(bob->CountOf(MessageId::kDayStarted), 1u);
+  const auto night = bob->Last<protocol::DayStarted>(MessageId::kDayStarted);
   ASSERT_EQ(bob->CountOf(MessageId::kResourceUpdate), 2u);
   const auto update = bob->Last<protocol::ResourceUpdate>(MessageId::kResourceUpdate);
-  ASSERT_EQ(update.nodes_size(), 1);
+  ASSERT_EQ(update.nodes_size(), 1) << "고갈되었던 노드만";
   EXPECT_EQ(update.nodes(0).node_id(), 1u);
   EXPECT_EQ(update.nodes(0).hp(), 1u);
-  EXPECT_EQ(update.tick(), config.respawn_ticks);
+  EXPECT_EQ(update.tick(), night.tick()) << "정산한 그 틱";
   EXPECT_EQ(service_.stats().nodes_respawned.load(), 1u);
-  EXPECT_EQ(DoGather(service_, clients_[1], 1).result(), protocol::GAME_OK) << "재생한 노드는 다시 칠 수 있다";
+  EXPECT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_OK) << "재생한 노드는 다시 칠 수 있다";
 }
 
 TEST_F(GatherServiceTest, ChangesInOneTickAreMergedIntoOneUpdateSortedByNode) {
@@ -930,10 +951,17 @@ TEST_F(GatherServiceTest, ACatchUpTickStillDeliversEveryChangeAndRespawnsInOrder
   ASSERT_EQ(alice->CountOf(MessageId::kResourceUpdate), 1u);
   EXPECT_EQ(alice->Last<protocol::ResourceUpdate>(MessageId::kResourceUpdate).tick(), 3u);
 
-  const std::uint32_t respawn = service_.config().respawn_ticks;
-  service_.Tick(respawn - 3);  // 정확히 재생 틱까지 한꺼번에
+  // 하루 끝(12,000틱)을 넘는 따라잡기 틱: 정산은 한 번이고 새 날은 그 틱에서 시작한다.
+  service_.Tick(12000);  // 3 -> 12,003
+  EXPECT_EQ(alice->CountOf(MessageId::kDayStarted), 1u) << "경계를 넘어도 정산은 한 번";
+  const auto night = alice->Last<protocol::DayStarted>(MessageId::kDayStarted);
+  EXPECT_TRUE(night.forced());
+  EXPECT_EQ(night.tick(), 12003u);
+  EXPECT_EQ(night.clock().day_start_tick(), 12003) << "새 날은 그 틱에 시작(넘은 틱 수는 버린다)";
   ASSERT_EQ(alice->CountOf(MessageId::kResourceUpdate), 2u);
   EXPECT_EQ(alice->Last<protocol::ResourceUpdate>(MessageId::kResourceUpdate).nodes(0).hp(), 1u);
+  service_.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kDayStarted), 1u) << "다음 틱에 또 정산하지 않는다";
 }
 
 TEST_F(GatherServiceTest, UpdatesStayInsideTheirOwnRoom) {
@@ -1004,7 +1032,7 @@ TEST_F(BuildServiceTest, BuildingRepliesAtOnceAndTheRoomLearnsOnTheNextTickThenO
   auto bob = clients_[2];
   Equip(alice);
 
-  const auto response = DoBuild(service_, alice, 2400.0f, 2800.0f);
+  const auto response = DoBuild(service_, alice, 2400.0f, 2000.0f);
   EXPECT_EQ(response.result(), protocol::GAME_OK);
   EXPECT_EQ(response.structure_id(), 1u);
   EXPECT_EQ(response.wood(), 0u) << "비용만큼 차감된 현재 인벤토리";
@@ -1018,16 +1046,22 @@ TEST_F(BuildServiceTest, BuildingRepliesAtOnceAndTheRoomLearnsOnTheNextTickThenO
     const auto update = client->Nth<protocol::StructureUpdate>(MessageId::kStructureUpdate);
     ASSERT_EQ(update.structures_size(), 1);
     EXPECT_EQ(update.structures(0).state(), protocol::STRUCTURE_BUILDING);
-    EXPECT_EQ(update.structures(0).ready_tick(), 100u);
+    EXPECT_EQ(update.structures(0).ready_tick(), 0u) << "건설 중이면 0(다음 밤 정산에 완공)";
   }
 
-  for (int i = 0; i < 98; ++i) service_.Tick();  // 99틱
-  EXPECT_EQ(bob->CountOf(MessageId::kStructureUpdate), 1u) << "99틱까지는 완공 알림이 없다";
-  service_.Tick();  // 100틱
+  for (int i = 0; i < 200; ++i) service_.Tick();  // 옛 완공 시각(100틱)이 지나도
+  EXPECT_EQ(bob->CountOf(MessageId::kStructureUpdate), 1u) << "밤 정산 전에는 완공 알림이 없다";
+  WalkToFarmhouse({alice, bob});
+  ASSERT_EQ(Sleep(alice, true).result(), protocol::GAME_OK);
+  ASSERT_EQ(Sleep(bob, true).result(), protocol::GAME_OK);
+  EXPECT_EQ(bob->CountOf(MessageId::kStructureUpdate), 1u);
+  service_.Tick();  // 밤 정산
   ASSERT_EQ(bob->CountOf(MessageId::kStructureUpdate), 2u);
+  const auto night = bob->Last<protocol::DayStarted>(MessageId::kDayStarted);
   const auto done = bob->Last<protocol::StructureUpdate>(MessageId::kStructureUpdate);
-  EXPECT_EQ(done.tick(), 100u);
+  EXPECT_EQ(done.tick(), night.tick());
   EXPECT_EQ(done.structures(0).state(), protocol::STRUCTURE_COMPLETE);
+  EXPECT_EQ(done.structures(0).ready_tick(), night.tick()) << "완공이면 완공된 틱";
   EXPECT_EQ(service_.stats().structures_completed.load(), 1u);
 
   service_.Tick();
@@ -1037,10 +1071,10 @@ TEST_F(BuildServiceTest, BuildingRepliesAtOnceAndTheRoomLearnsOnTheNextTickThenO
 TEST_F(BuildServiceTest, EachRejectionHasItsOwnCodeAndChangesNothing) {
   TwoPlayers();
   auto alice = clients_[1];
-  EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_ENOUGH_RESOURCES);
+  EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2000.0f).result(), protocol::GAME_NOT_ENOUGH_RESOURCES);
   Equip(alice);
 
-  EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f, 5).result(), protocol::GAME_BUILD_INVALID_TYPE);
+  EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2000.0f, 5).result(), protocol::GAME_BUILD_INVALID_TYPE);
   EXPECT_EQ(DoBuild(service_, alice, 2400.0f, 2400.0f).result(), protocol::GAME_BUILD_BLOCKED);
   EXPECT_EQ(DoBuild(service_, alice, 4500.0f, 4500.0f).result(), protocol::GAME_BUILD_TOO_FAR);
   const auto rejected = DoBuild(service_, alice, 4500.0f, 4500.0f);
@@ -1056,19 +1090,20 @@ TEST_F(BuildServiceTest, EachRejectionHasItsOwnCodeAndChangesNothing) {
 
 TEST_F(BuildServiceTest, BuildingOutsideARoomIsRejectedAndKeepsTheConnection) {
   auto loner = NewClient(7);
-  EXPECT_EQ(DoBuild(service_, loner, 2400.0f, 2800.0f).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_EQ(DoBuild(service_, loner, 2400.0f, 2000.0f).result(), protocol::GAME_NOT_IN_ROOM);
   EXPECT_EQ(service_.stats().builds_rejected.load(), 1u);
   CreateRoomWith(8, "alice");
   Leave(clients_[8]);
-  EXPECT_EQ(DoBuild(service_, clients_[8], 2400.0f, 2800.0f).result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_EQ(DoBuild(service_, clients_[8], 2400.0f, 2000.0f).result(), protocol::GAME_NOT_IN_ROOM);
 }
 
 TEST_F(BuildServiceTest, ALateJoinerReceivesTheCurrentStructuresWithTheirState) {
   const std::string code = CreateRoomWith(1, "alice");
   Equip(clients_[1], 40, 20);
-  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2800.0f).result(), protocol::GAME_OK);
-  for (int i = 0; i < 100; ++i) service_.Tick();  // 첫 집 완공
-  ASSERT_EQ(DoBuild(service_, clients_[1], 2700.0f, 2700.0f).result(), protocol::GAME_OK);
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2000.0f).result(), protocol::GAME_OK);
+  service_.Tick(12000);  // 강제 밤 정산: 첫 집 완공
+  ASSERT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 1u);
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2800.0f, 2200.0f).result(), protocol::GAME_OK);
   service_.Tick();  // 둘째 집은 건설 중
 
   auto bob = NewClient(2);
@@ -1083,7 +1118,7 @@ TEST_F(BuildServiceTest, UpdatesStayInsideTheirOwnRoom) {
   CreateRoomWith(1, "alice");
   CreateRoomWith(2, "bob");  // 다른 방
   Equip(clients_[1]);
-  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2000.0f).result(), protocol::GAME_OK);
   service_.Tick();
   EXPECT_EQ(clients_[1]->CountOf(MessageId::kStructureUpdate), 1u);
   EXPECT_EQ(clients_[2]->CountOf(MessageId::kStructureUpdate), 0u);
@@ -1093,10 +1128,11 @@ TEST_F(BuildServiceTest, ACatchUpTickStillDeliversTheCompletion) {
   CreateRoomWith(1, "alice");
   auto alice = clients_[1];
   Equip(alice);
-  ASSERT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  ASSERT_EQ(DoBuild(service_, alice, 2400.0f, 2000.0f).result(), protocol::GAME_OK);
   service_.Tick(3);
   ASSERT_EQ(alice->CountOf(MessageId::kStructureUpdate), 1u);
-  service_.Tick(97);  // 정확히 100틱
+  service_.Tick(11999);  // 하루 끝을 넘는 따라잡기 틱
+  EXPECT_EQ(alice->CountOf(MessageId::kDayStarted), 1u);
   ASSERT_EQ(alice->CountOf(MessageId::kStructureUpdate), 2u);
   EXPECT_EQ(alice->Last<protocol::StructureUpdate>(MessageId::kStructureUpdate).structures(0).state(), protocol::STRUCTURE_COMPLETE);
 }
@@ -1107,7 +1143,7 @@ TEST_F(BuildServiceTest, ALeaverDuringUpdateDeliveryDoesNotBreakTheTick) {
   clients_[1]->on_deliver = [this](MessageId id) {
     if (id == MessageId::kStructureUpdate) service_.OnDisconnect(2);
   };
-  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2800.0f).result(), protocol::GAME_OK);
+  ASSERT_EQ(DoBuild(service_, clients_[1], 2400.0f, 2000.0f).result(), protocol::GAME_OK);
   service_.Tick();
   EXPECT_EQ(service_.RoomCodeOf(2), "");
   service_.Tick();
@@ -1118,29 +1154,29 @@ TEST_F(BuildServiceTest, TheServerStopsAPlayerAtABuiltWallEvenWhenTheClientKeeps
   CreateRoomWith(1, "alice");
   auto alice = clients_[1];
   Equip(alice);
-  ASSERT_EQ(DoBuild(service_, alice, 2400.0f, 2800.0f).result(), protocol::GAME_OK);  // y 2650~2950
+  ASSERT_EQ(DoBuild(service_, alice, 2400.0f, 2000.0f).result(), protocol::GAME_OK);  // y 1850~2150
 
   protocol::MoveInput input;
   input.set_sequence(1);
   input.set_dir_x(0.0f);
-  input.set_dir_y(50.0f);  // 부풀린 방향
+  input.set_dir_y(-50.0f);  // 부풀린 방향(남쪽, 집 쪽)
   service_.HandleMoveInput(alice, input);
-  float max_y = 0.0f;
+  float min_y = 1.0e9f;
   for (int i = 0; i < 80; ++i) {
     service_.Tick();
     const auto snapshot = alice->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
-    max_y = std::max(max_y, snapshot.players(0).y());
+    min_y = std::min(min_y, snapshot.players(0).y());
   }
-  EXPECT_LE(max_y, 2610.01f);
-  EXPECT_GE(max_y, 2600.0f) << "벽 앞까지는 간다";
+  EXPECT_GE(min_y, 2189.99f) << "벽(2150) + 몸 반지름(40)";
+  EXPECT_LE(min_y, 2200.0f) << "벽 앞까지는 간다";
 }
 
 TEST_F(BuildServiceTest, TwoBuildersOnTheSameSpotInTheSameTickExactlyOneSucceeds) {
   TwoPlayers();
   Equip(clients_[1]);
   Equip(clients_[2]);
-  const auto first = DoBuild(service_, clients_[1], 2500.0f, 2800.0f);
-  const auto second = DoBuild(service_, clients_[2], 2500.0f, 2800.0f);
+  const auto first = DoBuild(service_, clients_[1], 2500.0f, 2000.0f);
+  const auto second = DoBuild(service_, clients_[2], 2500.0f, 2000.0f);
   EXPECT_EQ(first.result(), protocol::GAME_OK);
   EXPECT_EQ(second.result(), protocol::GAME_BUILD_BLOCKED);
   EXPECT_EQ(second.wood(), 20u) << "진 사람은 비용을 내지 않는다";
@@ -1198,6 +1234,344 @@ TEST(GameServiceNoNodes, ARoomWithoutNodesWorks) {
   EXPECT_EQ(DoGather(service, alice, 1).result(), protocol::GAME_NODE_NOT_FOUND);
   service.Tick();
   EXPECT_EQ(alice->CountOf(MessageId::kResourceUpdate), 0u);
+}
+
+// ============================================================ 하루와 잠 (docs/content-day.md)
+
+// 하루가 200틱(bench_day_ticks)이고, 어디서든 쿨다운 없이 채집할 수 있고, 나무는 한 번에 고갈되는 설정.
+class DayServiceTest : public GameServiceTest {
+ protected:
+  DayServiceTest() : GameServiceTest(MakeConfig()) {}
+  static PlayConfig MakeConfig() {
+    PlayConfig config;
+    config.bench_day_ticks = 200;
+    config.gather_range_cm = 100000.0f;
+    config.gather_cooldown_ticks = 0;
+    config.tree_hp = 1;
+    return config;
+  }
+
+  // alice(1, 칸 0)가 방을 만들고 bob(2, 칸 1), 원하면 carol(3, 칸 2: 시작 집 바로 앞)이 들어온다.
+  std::string Players(int count) {
+    const std::string code = CreateRoomWith(1, "alice");
+    const char* names[] = {"alice", "bob", "carol", "dave"};
+    for (int i = 1; i < count; ++i) {
+      auto client = NewClient(static_cast<std::uint64_t>(i + 1));
+      EXPECT_EQ(Join(client, code, names[i]).result(), protocol::GAME_OK);
+    }
+    return code;
+  }
+
+  // 목재 20(나무 1~20번, 각 한 번에 고갈), 석재 10(돌 31번 8, 32번 2)을 모은다.
+  void Equip(const ClientPtr& client) {
+    for (std::uint32_t id = 1; id <= 20; ++id) ASSERT_EQ(DoGather(service_, client, id).result(), protocol::GAME_OK);
+    for (int i = 0; i < 8; ++i) ASSERT_EQ(DoGather(service_, client, 31).result(), protocol::GAME_OK);
+    for (int i = 0; i < 2; ++i) ASSERT_EQ(DoGather(service_, client, 32).result(), protocol::GAME_OK);
+  }
+
+  // client가 지금까지 받은 메시지 수(이후에 받은 것만 보려고 쓴다).
+  static std::size_t Mark(const ClientPtr& client) { return client->received.size(); }
+  static std::vector<MessageId> IdsSince(const ClientPtr& client, std::size_t mark) {
+    std::vector<MessageId> ids;
+    for (std::size_t i = mark; i < client->received.size(); ++i) ids.push_back(client->received[i].first);
+    return ids;
+  }
+};
+
+TEST_F(DayServiceTest, SleepAlwaysRepliesWithTheResultAndTheCurrentStateAndKeepsTheConnection) {
+  auto loner = NewClient(9);
+  auto outside = Sleep(loner, true);
+  EXPECT_EQ(outside.result(), protocol::GAME_NOT_IN_ROOM);
+  EXPECT_FALSE(outside.sleeping());
+  EXPECT_EQ(Sleep(loner, false).result(), protocol::GAME_NOT_IN_ROOM);
+
+  Players(1);
+  auto alice = clients_[1];
+  auto too_far = Sleep(alice, true);  // 칸 0은 시작 집에서 300 cm
+  EXPECT_EQ(too_far.result(), protocol::GAME_SLEEP_TOO_FAR);
+  EXPECT_FALSE(too_far.sleeping());
+  WalkToFarmhouse({alice});
+  auto ok = Sleep(alice, true);
+  EXPECT_EQ(ok.result(), protocol::GAME_OK);
+  EXPECT_TRUE(ok.sleeping());
+  auto again = Sleep(alice, true);
+  EXPECT_EQ(again.result(), protocol::GAME_OK) << "이미 잠들었으면 성공";
+  EXPECT_TRUE(again.sleeping());
+  auto awake = Sleep(alice, false);
+  EXPECT_EQ(awake.result(), protocol::GAME_OK);
+  EXPECT_FALSE(awake.sleeping());
+  EXPECT_EQ(service_.stats().sleeps_ok.load(), 3u);
+  EXPECT_EQ(service_.stats().sleeps_rejected.load(), 3u);
+  EXPECT_EQ(service_.room_count(), 1u) << "연결도 방도 그대로";
+}
+
+TEST_F(DayServiceTest, SleepUpdateGoesToEveryoneOnlyOnTicksWhereTheListChanged) {
+  Players(3);
+  auto carol = clients_[3];  // 칸 2: 시작 집 바로 앞
+  ASSERT_EQ(Sleep(carol, true).result(), protocol::GAME_OK);
+  EXPECT_EQ(carol->CountOf(MessageId::kSleepUpdate), 0u) << "알림은 틱 끝에 간다";
+  service_.Tick();
+  for (std::uint64_t id = 1; id <= 3; ++id) {
+    ASSERT_EQ(clients_[id]->CountOf(MessageId::kSleepUpdate), 1u) << "본인을 포함한 방 전원 " << id;
+    const auto update = clients_[id]->Last<protocol::SleepUpdate>(MessageId::kSleepUpdate);
+    ASSERT_EQ(update.sleeping_player_ids_size(), 1);
+    EXPECT_EQ(update.sleeping_player_ids(0), 3u);
+    EXPECT_EQ(update.tick(), 1u);
+  }
+  service_.Tick();
+  service_.Tick();
+  EXPECT_EQ(carol->CountOf(MessageId::kSleepUpdate), 1u) << "바뀌지 않았으면 보내지 않는다";
+  Sleep(carol, false);
+  Sleep(carol, true);  // 같은 틱 안에서 깼다가 다시 잔다: 목록은 그대로
+  service_.Tick();
+  EXPECT_EQ(carol->CountOf(MessageId::kSleepUpdate), 1u);
+  Sleep(carol, false);
+  service_.Tick();
+  ASSERT_EQ(clients_[1]->CountOf(MessageId::kSleepUpdate), 2u);
+  EXPECT_EQ(clients_[1]->Last<protocol::SleepUpdate>(MessageId::kSleepUpdate).sleeping_player_ids_size(), 0)
+      << "모두 깨면 빈 목록";
+}
+
+TEST_F(DayServiceTest, WhenEveryoneSleepsTheNextTickStartsANewDayWithDayStartedSentFirst) {
+  Players(2);
+  auto alice = clients_[1];
+  auto bob = clients_[2];
+  Equip(alice);
+  ASSERT_EQ(DoBuild(service_, alice, 2400.0f, 2000.0f).result(), protocol::GAME_OK);
+  service_.Tick();  // 고갈된 노드와 건설 중인 집 알림
+  WalkToFarmhouse({alice, bob});
+  ASSERT_EQ(Sleep(alice, true).result(), protocol::GAME_OK);
+  service_.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kDayStarted), 0u) << "한 명이 깨어 있으면 넘어가지 않는다";
+  ASSERT_EQ(Sleep(bob, true).result(), protocol::GAME_OK);
+  EXPECT_EQ(alice->CountOf(MessageId::kDayStarted), 0u) << "잠자기 요청 즉시가 아니라 다음 틱에 정산";
+
+  const std::size_t alice_mark = Mark(alice);
+  const std::size_t bob_mark = Mark(bob);
+  service_.Tick();
+  const std::vector<MessageId> expected = {MessageId::kDayStarted, MessageId::kWorldSnapshot, MessageId::kResourceUpdate,
+                                           MessageId::kStructureUpdate, MessageId::kSleepUpdate};
+  EXPECT_EQ(IdsSince(alice, alice_mark), expected) << "DayStarted가 가장 먼저, 그다음 스냅샷, 노드, 구조물, 잠든 사람";
+  EXPECT_EQ(IdsSince(bob, bob_mark), expected);
+
+  const auto night = bob->Last<protocol::DayStarted>(MessageId::kDayStarted);
+  EXPECT_FALSE(night.forced());
+  EXPECT_EQ(night.clock().day(), 2u);
+  EXPECT_EQ(night.clock().day_start_tick(), static_cast<std::int64_t>(night.tick()));
+  EXPECT_EQ(night.clock().day_length_ticks(), 200u);
+  EXPECT_EQ(night.clock().ticks_per_game_minute(), 10u);
+  EXPECT_EQ(night.clock().day_start_minute(), 360u);
+
+  const auto morning = bob->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
+  EXPECT_EQ(morning.tick(), night.tick());
+  ASSERT_EQ(morning.players_size(), 2);
+  EXPECT_EQ(morning.players(0).x(), 2400.0f) << "스냅샷은 아침 위치";
+  EXPECT_EQ(morning.players(0).y(), 2400.0f);
+  EXPECT_EQ(morning.players(1).x(), 2600.0f);
+  EXPECT_EQ(morning.players(1).y(), 2400.0f);
+  EXPECT_EQ(morning.players(0).last_input_seq(), 1001u) << "입력 번호는 그대로";
+
+  EXPECT_EQ(bob->Last<protocol::ResourceUpdate>(MessageId::kResourceUpdate).nodes_size(), 21) << "고갈된 노드 21개가 돌아온다";
+  const auto built = bob->Last<protocol::StructureUpdate>(MessageId::kStructureUpdate);
+  ASSERT_EQ(built.structures_size(), 1);
+  EXPECT_EQ(built.structures(0).state(), protocol::STRUCTURE_COMPLETE);
+  EXPECT_EQ(bob->Last<protocol::SleepUpdate>(MessageId::kSleepUpdate).sleeping_player_ids_size(), 0)
+      << "밤 정산 뒤에는 잠든 사람이 없다";
+  EXPECT_EQ(service_.stats().days_started.load(), 1u);
+  EXPECT_EQ(service_.stats().forced_nights.load(), 0u);
+  EXPECT_EQ(service_.FindRoom(service_.RoomCodeOf(1))->day(), 2u);
+
+  // 깨어났으니 다시 움직이고 채집할 수 있다.
+  Move(alice, 1002, 1.0f, 0.0f);
+  service_.Tick();
+  EXPECT_GT(alice->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot).players(0).x(), 2400.0f);
+  EXPECT_EQ(DoGather(service_, alice, 1).result(), protocol::GAME_OK);
+}
+
+TEST_F(DayServiceTest, OneAwakePlayerKeepsTheDayGoingUntilItIsForced) {
+  Players(3);
+  ASSERT_EQ(Sleep(clients_[3], true).result(), protocol::GAME_OK);
+  for (int i = 0; i < 199; ++i) service_.Tick();
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 0u) << "경과 199틱: 깨어 있는 사람이 있으면 정산하지 않는다";
+  service_.Tick();  // 200틱
+  ASSERT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 1u) << "하루 끝(200틱)에 강제 정산";
+  const auto night = clients_[1]->Last<protocol::DayStarted>(MessageId::kDayStarted);
+  EXPECT_TRUE(night.forced());
+  EXPECT_EQ(night.tick(), 200u);
+  EXPECT_EQ(service_.stats().forced_nights.load(), 1u);
+  for (int i = 0; i < 199; ++i) service_.Tick();
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 1u);
+  service_.Tick();
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 2u) << "다음 하루도 200틱";
+}
+
+TEST_F(GameServiceTest, TheDefaultDayIsForcedAtExactly12000TicksWhereverThePlayerIs) {
+  CreateRoomWith(1, "alice");
+  auto alice = clients_[1];
+  Move(alice, 1, -1.0f, -1.0f);  // 시작 집에서 멀어진다
+  for (int i = 0; i < 11999; ++i) service_.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kDayStarted), 0u) << "경과 11,999틱에는 정산하지 않는다";
+  service_.Tick();
+  ASSERT_EQ(alice->CountOf(MessageId::kDayStarted), 1u) << "12,000틱에 강제 정산";
+  const auto night = alice->Last<protocol::DayStarted>(MessageId::kDayStarted);
+  EXPECT_TRUE(night.forced());
+  EXPECT_EQ(night.tick(), 12000u);
+  EXPECT_EQ(night.clock().day(), 2u);
+  EXPECT_EQ(night.clock().day_length_ticks(), 12000u);
+  const auto morning = alice->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
+  EXPECT_EQ(morning.players(0).x(), 2400.0f) << "깨어 있던 사람도 아침 위치로";
+  EXPECT_EQ(morning.players(0).y(), 2400.0f);
+}
+
+TEST_F(DayServiceTest, TheLastAwakePlayerLeavingEndsTheDayOnTheNextTick) {
+  Players(3);
+  ASSERT_EQ(Sleep(clients_[3], true).result(), protocol::GAME_OK);
+  service_.Tick();
+  Leave(clients_[1]);
+  service_.Tick();
+  EXPECT_EQ(clients_[3]->CountOf(MessageId::kDayStarted), 0u) << "bob이 아직 깨어 있다";
+  service_.OnDisconnect(2);  // 깨어 있던 마지막 사람의 연결이 끊긴다
+  service_.Tick();
+  ASSERT_EQ(clients_[3]->CountOf(MessageId::kDayStarted), 1u);
+  EXPECT_FALSE(clients_[3]->Last<protocol::DayStarted>(MessageId::kDayStarted).forced());
+}
+
+TEST_F(DayServiceTest, AJoinerArrivingBeforeTheNextTickKeepsTheDayGoing) {
+  const std::string code = Players(1);
+  auto alice = clients_[1];
+  WalkToFarmhouse({alice});
+  ASSERT_EQ(Sleep(alice, true).result(), protocol::GAME_OK);
+  auto bob = NewClient(2);
+  ASSERT_EQ(Join(bob, code, "bob").result(), protocol::GAME_OK);  // 깨어 있는 채로 들어온다
+  service_.Tick();
+  EXPECT_EQ(alice->CountOf(MessageId::kDayStarted), 0u) << "새로 들어온 사람이 정산을 막는다";
+}
+
+TEST_F(DayServiceTest, ALateJoinerReceivesTheClockTheFarmhouseAndWhoIsAsleep) {
+  const std::string code = Players(1);
+  auto alice = clients_[1];
+  const auto created = alice->Last<protocol::CreateRoomResponse>(MessageId::kCreateRoomResponse);
+  EXPECT_EQ(created.state().clock().day(), 1u) << "새 방은 1일차";
+  EXPECT_EQ(created.state().clock().day_start_tick(), 0);
+  EXPECT_EQ(created.state().sleeping_player_ids_size(), 0);
+
+  for (int i = 0; i < 200; ++i) service_.Tick();  // 강제 정산 한 번: 2일차, 200틱에 시작
+  for (int i = 0; i < 30; ++i) service_.Tick();
+  auto bob = NewClient(2);
+  ASSERT_EQ(Join(bob, code, "bob").result(), protocol::GAME_OK);
+  auto carol = NewClient(3);
+  ASSERT_EQ(Join(carol, code, "carol").result(), protocol::GAME_OK);
+  ASSERT_EQ(Sleep(carol, true).result(), protocol::GAME_OK);
+
+  auto dave = NewClient(4);
+  const auto joined = Join(dave, code, "dave");
+  ASSERT_EQ(joined.result(), protocol::GAME_OK);
+  const auto& clock = joined.state().clock();
+  EXPECT_EQ(clock.day(), 2u);
+  EXPECT_EQ(clock.day_start_tick(), 200);
+  EXPECT_EQ(clock.day_length_ticks(), 200u);
+  EXPECT_EQ(clock.ticks_per_game_minute(), 10u);
+  EXPECT_EQ(clock.day_start_minute(), 360u);
+  ASSERT_EQ(joined.state().landmarks_size(), 1);
+  const auto& farmhouse = joined.state().landmarks(0);
+  EXPECT_EQ(farmhouse.kind(), protocol::LANDMARK_FARMHOUSE);
+  EXPECT_EQ(farmhouse.x(), 2500.0f);
+  EXPECT_EQ(farmhouse.y(), 2850.0f);
+  EXPECT_EQ(farmhouse.width(), 400.0f);
+  EXPECT_EQ(farmhouse.height(), 300.0f);
+  ASSERT_EQ(joined.state().sleeping_player_ids_size(), 1);
+  EXPECT_EQ(joined.state().sleeping_player_ids(0), 3u) << "지금 잠든 사람";
+}
+
+TEST(GameServiceNoFarmhouse, ARoomWithoutAFarmhouseSendsNoLandmarks) {
+  boost::asio::io_context io;
+  PlayConfig config;
+  config.farmhouse_width_cm = 0.0f;
+  GameService service(io, config);
+  auto alice = std::make_shared<FakeClient>(1);
+  protocol::CreateRoomRequest request;
+  request.set_nickname("alice");
+  service.HandleCreateRoom(alice, request);
+  EXPECT_EQ(alice->Last<protocol::CreateRoomResponse>(MessageId::kCreateRoomResponse).state().landmarks_size(), 0);
+}
+
+TEST_F(DayServiceTest, ANightInOneRoomDoesNotTouchAnotherRoom) {
+  CreateRoomWith(1, "alice");
+  const std::string other = CreateRoomWith(2, "bob");
+  WalkToFarmhouse({clients_[1]});
+  ASSERT_EQ(Sleep(clients_[1], true).result(), protocol::GAME_OK);
+  service_.Tick();
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 1u);
+  EXPECT_EQ(clients_[2]->CountOf(MessageId::kDayStarted), 0u) << "다른 방에는 알림이 없다";
+  EXPECT_EQ(clients_[2]->CountOf(MessageId::kSleepUpdate), 0u);
+  EXPECT_EQ(service_.FindRoom(other)->day(), 1u);
+}
+
+TEST_F(DayServiceTest, MoveInputsFromASleeperAreIgnoredAndCounted) {
+  Players(3);
+  auto carol = clients_[3];
+  ASSERT_EQ(Sleep(carol, true).result(), protocol::GAME_OK);
+  const std::uint64_t ignored = service_.stats().inputs_ignored.load();
+  Move(carol, 5, 1.0f, 0.0f);
+  EXPECT_EQ(service_.stats().inputs_ignored.load(), ignored + 1);
+  for (int i = 0; i < 5; ++i) service_.Tick();
+  const auto snapshot = carol->Last<protocol::WorldSnapshot>(MessageId::kWorldSnapshot);
+  EXPECT_EQ(snapshot.players(2).x(), 2400.0f) << "잠든 사람은 움직이지 않는다";
+  EXPECT_EQ(snapshot.players(2).last_input_seq(), 0u) << "입력 번호도 반영하지 않는다";
+}
+
+TEST_F(DayServiceTest, GatheringAndBuildingWhileAsleepGetTheirOwnCode) {
+  Players(3);
+  auto carol = clients_[3];
+  ASSERT_EQ(DoGather(service_, carol, 31).result(), protocol::GAME_OK);
+  ASSERT_EQ(Sleep(carol, true).result(), protocol::GAME_OK);
+  const auto gathered = DoGather(service_, carol, 31);
+  EXPECT_EQ(gathered.result(), protocol::GAME_SLEEPING);
+  EXPECT_EQ(gathered.stone(), 1u) << "거부 응답도 현재 인벤토리를 담는다";
+  const auto built = DoBuild(service_, carol, 2400.0f, 2000.0f);
+  EXPECT_EQ(built.result(), protocol::GAME_SLEEPING);
+  EXPECT_EQ(built.stone(), 1u);
+  service_.Tick();
+  EXPECT_EQ(carol->CountOf(MessageId::kStructureUpdate), 0u);
+  EXPECT_EQ(service_.stats().gathers_rejected.load(), 1u);
+  EXPECT_EQ(service_.stats().builds_rejected.load(), 1u);
+}
+
+TEST_F(DayServiceTest, ADisconnectWhileDayStartedIsBeingDeliveredIsSafe) {
+  Players(3);
+  clients_[1]->on_deliver = [this](MessageId id) {
+    if (id == MessageId::kDayStarted) service_.OnDisconnect(2);  // 알림을 보내는 중 다른 사람의 연결이 닫힌다
+  };
+  clients_[3]->on_deliver = [this](MessageId id) {
+    if (id == MessageId::kDayStarted) service_.HandleLeaveRoom(clients_[3]);  // 정산 틱에 자기가 나간다
+  };
+  for (int i = 0; i < 200; ++i) service_.Tick();  // 강제 정산
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 1u);
+  EXPECT_EQ(service_.RoomCodeOf(2), "");
+  EXPECT_EQ(service_.RoomCodeOf(3), "");
+  service_.Tick();
+  EXPECT_EQ(service_.stats().current_players.load(), 1u);
+  EXPECT_EQ(service_.room_count(), 1u);
+}
+
+TEST_F(DayServiceTest, ASleeperDisconnectingIsSafeAndOnlyTheLeftoverSleepersCount) {
+  Players(3);
+  ASSERT_EQ(Sleep(clients_[3], true).result(), protocol::GAME_OK);
+  service_.Tick();
+  service_.OnDisconnect(3);  // 잠든 채로 끊김
+  service_.Tick();
+  EXPECT_EQ(clients_[1]->CountOf(MessageId::kDayStarted), 0u) << "나간 잠든 사람은 정산을 일으키지 않는다";
+  ASSERT_EQ(clients_[1]->CountOf(MessageId::kSleepUpdate), 2u);
+  EXPECT_EQ(clients_[1]->Last<protocol::SleepUpdate>(MessageId::kSleepUpdate).sleeping_player_ids_size(), 0);
+  EXPECT_EQ(Sleep(clients_[3], true).result(), protocol::GAME_NOT_IN_ROOM);
+}
+
+TEST_F(DayServiceTest, TheStatsLineShowsTheNights) {
+  Players(1);
+  for (int i = 0; i < 200; ++i) service_.Tick();
+  const std::string summary = service_.stats().Summary();
+  EXPECT_NE(summary.find("하루{정산=1 강제=1 "), std::string::npos) << summary;
+  EXPECT_NE(summary.find("틱시간{이동="), std::string::npos) << "기존 묶음 모양은 그대로";
 }
 
 }  // namespace

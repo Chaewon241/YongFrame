@@ -22,6 +22,7 @@ namespace game::testing_support {
 // 채팅에도 입장한 연결이면 채팅 전파(ChatBroadcast)와 입장 알림(PresenceNotice)도 끼어든다.
 inline const std::vector<MessageId> kGameSkip = {MessageId::kWorldSnapshot, MessageId::kRoomEvent,
                                                   MessageId::kResourceUpdate, MessageId::kStructureUpdate,
+                                                  MessageId::kSleepUpdate,    MessageId::kDayStarted,
                                                   MessageId::kPresenceNotice, MessageId::kChatBroadcast};
 
 inline protocol::CreateRoomResponse CreateRoom(BlockingClient& c, const std::string& nickname) {
@@ -188,6 +189,41 @@ inline bool WaitStructureUpdate(BlockingClient& c, protocol::StructureUpdate& ou
     if (!update.ParseFromArray(frame.payload.data(), static_cast<int>(frame.payload.size()))) return false;
     if (predicate(update)) {
       out = update;
+      return true;
+    }
+  }
+  return false;
+}
+
+// 잔다(true) 또는 깬다(false). 응답(결과 코드와 내 잠 상태)을 돌려준다. docs/content-day.md
+inline protocol::SleepResponse Sleep(BlockingClient& c, bool sleep) {
+  protocol::SleepRequest request;
+  request.set_sleep(sleep);
+  protocol::SleepResponse response;
+  response.set_result(static_cast<protocol::GameResult>(-1));
+  if (!SendProto(c, MessageId::kSleepRequest, request) || !Receive(c, MessageId::kSleepResponse, response, kGameSkip)) {
+    ADD_FAILURE() << "잠 요청/응답 실패: " << c.last_error();
+  }
+  return response;
+}
+
+// id 종류의 메시지 중 조건을 만족하는 것이 올 때까지 기다린다. 다른 메시지는 버린다. seen이 있으면 받은 모든 ID를
+// 순서대로 적는다(알림 순서 시험용).
+template <typename T>
+bool WaitMessage(BlockingClient& c, MessageId id, T& out, const std::function<bool(const T&)>& predicate,
+                 Millis timeout = Millis(3000), std::vector<std::uint16_t>* seen = nullptr) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    protocol::Frame frame;
+    const Status status = c.ReceiveFrame(frame, Millis(500));
+    if (status == Status::kTimeout) continue;
+    if (status != Status::kFrame) return false;
+    if (seen != nullptr) seen->push_back(frame.message_id);
+    if (frame.message_id != protocol::ToUint16(id)) continue;
+    T message;
+    if (!message.ParseFromArray(frame.payload.data(), static_cast<int>(frame.payload.size()))) return false;
+    if (predicate(message)) {
+      out = message;
       return true;
     }
   }

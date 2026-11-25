@@ -30,6 +30,14 @@ World::World(const PlayConfig& config) : config_(config) {}
 
 void World::CollectObstacles(double x, double y, double reach, std::vector<Obstacle>& out) const {
   const double r = config_.player_radius_cm;
+  for (const Rect& rect : fixed_) {
+    if (std::abs(x - rect.cx) <= rect.hw + r + reach && std::abs(y - rect.cy) <= rect.hh + r + reach) {
+      Obstacle obstacle;
+      obstacle.is_rect = true;
+      obstacle.rect = rect;
+      out.push_back(obstacle);
+    }
+  }
   if (structures_ != nullptr) {
     for (const Structure& structure : structures_->structures()) {
       const Rect rect = structure.Footprint();
@@ -83,20 +91,15 @@ bool World::IsFree(float x, float y) const {
   return !Blocked(x, y, obstacles);
 }
 
-void World::AddPlayer(std::uint32_t id, std::uint32_t slot) {
-  if (Find(id) != nullptr) {
-    return;
-  }
-  PlayerBody body;
-  body.id = id;
+void World::SpawnPosition(std::uint32_t slot, float& out_x, float& out_y) const {
   // 맵 중앙을 기준으로, 칸 번호에 맞는 오프셋만큼 떨어뜨려 시작한다. 4칸을 넘는 번호는 중앙에서 시작한다.
   const std::size_t count = sizeof(kSpawnOffsets) / sizeof(kSpawnOffsets[0]);
   const SpawnOffset offset = slot < count ? kSpawnOffsets[slot] : SpawnOffset{0.0f, 0.0f};
-  body.x = config_.map_width_cm * 0.5f + offset.x;
-  body.y = config_.map_height_cm * 0.5f + offset.y;
+  float x = config_.map_width_cm * 0.5f + offset.x;
+  float y = config_.map_height_cm * 0.5f + offset.y;
 
   // 그 자리에 구조물이나 노드가 있으면(늦게 입장했는데 중앙에 집을 지은 경우) 갇히지 않게 가까운 빈 자리로 옮긴다.
-  if ((structures_ != nullptr || resources_ != nullptr) && !IsFree(body.x, body.y)) {
+  if (HasObstacles() && !IsFree(x, y)) {
     bool found = false;
     for (int ring = 1; ring <= kSpawnSearchRings && !found; ++ring) {
       for (int dy = -ring; dy <= ring && !found; ++dy) {
@@ -104,18 +107,54 @@ void World::AddPlayer(std::uint32_t id, std::uint32_t slot) {
           if (std::max(std::abs(dx), std::abs(dy)) != ring) {
             continue;  // 이 고리의 바깥 테두리만 본다
           }
-          const float x = body.x + static_cast<float>(dx * kSpawnSearchStep);
-          const float y = body.y + static_cast<float>(dy * kSpawnSearchStep);
-          if (IsFree(x, y)) {
-            body.x = x;
-            body.y = y;
+          const float try_x = x + static_cast<float>(dx * kSpawnSearchStep);
+          const float try_y = y + static_cast<float>(dy * kSpawnSearchStep);
+          if (IsFree(try_x, try_y)) {
+            x = try_x;
+            y = try_y;
             found = true;
           }
         }
       }
     }
   }
+  out_x = x;
+  out_y = y;
+}
+
+void World::AddPlayer(std::uint32_t id, std::uint32_t slot) {
+  if (Find(id) != nullptr) {
+    return;
+  }
+  PlayerBody body;
+  body.id = id;
+  SpawnPosition(slot, body.x, body.y);
   players_.push_back(body);
+}
+
+bool World::Stop(std::uint32_t id) {
+  PlayerBody* body = FindMutable(id);
+  if (body == nullptr) {
+    return false;
+  }
+  body->dir_x = 0.0f;
+  body->dir_y = 0.0f;
+  return true;
+}
+
+bool World::MoveToSpawn(std::uint32_t id, std::uint32_t slot) {
+  PlayerBody* body = FindMutable(id);
+  if (body == nullptr) {
+    return false;
+  }
+  float x = 0.0f;
+  float y = 0.0f;
+  SpawnPosition(slot, x, y);
+  body->x = x;
+  body->y = y;
+  body->dir_x = 0.0f;
+  body->dir_y = 0.0f;
+  return true;
 }
 
 void World::RemovePlayer(std::uint32_t id) {
@@ -183,7 +222,7 @@ void World::Step(float dt_seconds) {
 
     // 이번 이동으로 닿을 수 있는 장애물만 추린다. 대부분의 몸은 근처에 장애물이 없어 추가 비용이 없다.
     scratch_.clear();
-    if (structures_ != nullptr || resources_ != nullptr) {
+    if (HasObstacles()) {
       CollectObstacles(body.x, body.y, static_cast<double>(step), scratch_);
     }
     if (scratch_.empty()) {

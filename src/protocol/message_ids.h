@@ -43,6 +43,12 @@ enum class MessageId : std::uint16_t {
   kBuildResponse = 114,
   kStructureUpdate = 115,
 
+  // 콘텐츠 조각 2: 하루와 잠 (docs/content-day.md)
+  kSleepRequest = 116,
+  kSleepResponse = 117,
+  kSleepUpdate = 118,
+  kDayStarted = 119,
+
   // 계정 (docs/persistence.md)
   kRegisterRequest = 120,
   kRegisterResponse = 121,
@@ -85,6 +91,10 @@ inline constexpr bool IsKnownMessageId(std::uint16_t id) {
     case MessageId::kBuildRequest:
     case MessageId::kBuildResponse:
     case MessageId::kStructureUpdate:
+    case MessageId::kSleepRequest:
+    case MessageId::kSleepResponse:
+    case MessageId::kSleepUpdate:
+    case MessageId::kDayStarted:
     case MessageId::kRegisterRequest:
     case MessageId::kRegisterResponse:
     case MessageId::kLoginRequest:
@@ -111,6 +121,7 @@ inline constexpr bool IsClientRequestId(std::uint16_t id) {
     case MessageId::kMoveInput:
     case MessageId::kGatherRequest:
     case MessageId::kBuildRequest:
+    case MessageId::kSleepRequest:
     case MessageId::kRegisterRequest:
     case MessageId::kLoginRequest:
     case MessageId::kProfileRequest:

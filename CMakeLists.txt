@@ -133,6 +133,11 @@ target_link_libraries(play_collision_test PRIVATE play_core GTest::gtest_main)
 apply_project_options(play_collision_test)
 gtest_discover_tests(play_collision_test)
 
+add_executable(play_day_test tests/play_day_test.cpp)
+target_link_libraries(play_day_test PRIVATE play_core GTest::gtest_main)
+apply_project_options(play_day_test)
+gtest_discover_tests(play_day_test)
+
 add_executable(play_room_test tests/play_room_test.cpp)
 target_link_libraries(play_room_test PRIVATE play_core GTest::gtest_main)
 apply_project_options(play_room_test)
