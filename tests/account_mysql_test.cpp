@@ -61,6 +61,7 @@ constexpr const char* kStatsTable = "account_stats_test";
 constexpr const char* kFarmsTable = "farms_test";
 constexpr const char* kFarmStructuresTable = "farm_structures_test";
 constexpr const char* kFarmPlayersTable = "farm_players_test";
+constexpr const char* kFarmClockTable = "farm_clock_test";
 
 [[maybe_unused]] ::testing::Environment* const kQuietLog = ::testing::AddGlobalTestEnvironment(new QuietLogEnvironment);
 
@@ -178,14 +179,15 @@ std::optional<std::string> ReadMigration(const std::string& file_name) {
   return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
 }
 
-// 시험 전용 테이블을 실제 마이그레이션 SQL(002 계정, 003 농장)에서 이름만 바꿔 새로 만든다.
-// 바꾸는 순서: 긴 이름을 먼저(farm_structures, farm_players, farms, account_stats), 그다음 accounts. 어느 이름도 다른
-// 이름의 일부가 아니라서 안전하다.
+// 시험 전용 테이블을 실제 마이그레이션 SQL(002 계정, 003 농장, 004 시계)에서 이름만 바꿔 새로 만든다.
+// 바꾸는 순서: 긴 이름을 먼저(farm_structures, farm_players, farm_clock, farms, account_stats), 그다음 accounts. 어느
+// 이름도 다른 이름의 일부가 아니라서 안전하다.
 bool ResetTestTables(const MySqlOptions& options, std::string& error) {
   const auto accounts_sql = ReadMigration("002_create_accounts.sql");
   const auto farms_sql = ReadMigration("003_create_farms.sql");
-  if (!accounts_sql || !farms_sql) {
-    error = "db/migrations/002_create_accounts.sql 또는 003_create_farms.sql을 찾을 수 없음";
+  const auto clock_sql = ReadMigration("004_create_farm_clock.sql");
+  if (!accounts_sql || !farms_sql || !clock_sql) {
+    error = "db/migrations/002_create_accounts.sql, 003_create_farms.sql, 004_create_farm_clock.sql 중 찾을 수 없는 것이 있음";
     return false;
   }
   const auto rename = [](std::string ddl) {
@@ -196,6 +198,7 @@ bool ResetTestTables(const MySqlOptions& options, std::string& error) {
     };
     replace_all("farm_structures", kFarmStructuresTable);
     replace_all("farm_players", kFarmPlayersTable);
+    replace_all("farm_clock", kFarmClockTable);
     replace_all("farms", kFarmsTable);
     replace_all("account_stats", kStatsTable);
     replace_all("accounts", kAccountsTable);
@@ -208,14 +211,15 @@ bool ResetTestTables(const MySqlOptions& options, std::string& error) {
     return false;
   }
   boost::mysql::results result;
-  // 외래 키 때문에 참조하는 쪽(농장 인벤토리, 구조물, 농장, 누적 기록)을 먼저 지우고 accounts를 마지막에 지운다.
-  for (const char* table : {kFarmPlayersTable, kFarmStructuresTable, kFarmsTable, kStatsTable, kAccountsTable}) {
+  // 외래 키 때문에 참조하는 쪽(시계, 농장 인벤토리, 구조물, 농장, 누적 기록)을 먼저 지우고 accounts를 마지막에 지운다.
+  for (const char* table : {kFarmClockTable, kFarmPlayersTable, kFarmStructuresTable, kFarmsTable, kStatsTable, kAccountsTable}) {
     if (!admin.Execute(std::string("DROP TABLE IF EXISTS `") + table + "`", result)) {
       error = admin.error();
       return false;
     }
   }
-  if (!admin.Execute(rename(*accounts_sql), result) || !admin.Execute(rename(*farms_sql), result)) {
+  if (!admin.Execute(rename(*accounts_sql), result) || !admin.Execute(rename(*farms_sql), result) ||
+      !admin.Execute(rename(*clock_sql), result)) {
     error = admin.error();
     return false;
   }
@@ -546,7 +550,9 @@ using farm::FarmError;
 using farm::FarmTables;
 using farm::MySqlFarmRepository;
 
-FarmTables TestFarmTables() { return FarmTables{kFarmsTable, kFarmStructuresTable, kFarmPlayersTable, kStatsTable}; }
+FarmTables TestFarmTables() {
+  return FarmTables{kFarmsTable, kFarmStructuresTable, kFarmPlayersTable, kStatsTable, kFarmClockTable};
+}
 
 // 외래 키가 있어서 농장을 만들기 전에 계정 행이 있어야 한다. 번호는 1, 2, 3(새 테이블이라 1부터).
 void InsertAccounts(const MySqlOptions& options, int count) {
@@ -633,6 +639,7 @@ TEST_F(MySqlFarmRepositoryTest, ACreatedFarmCanBeFoundByItsOwnerOnly) {
   EXPECT_EQ(found.value->owner_account_id, 1u);
   EXPECT_TRUE(found.value->structures.empty());
   EXPECT_TRUE(found.value->players.empty());
+  EXPECT_FALSE(found.value->clock.has_value()) << "시계 행이 없으면 비어 있다(서버는 1일차 경과 0으로 본다)";
 
   const auto other = Find(2);
   EXPECT_TRUE(other.ok);
@@ -737,6 +744,7 @@ TEST_F(MySqlFarmRepositoryTest, ASaveThatFailsHalfwayChangesNothing) {
   bad.farm_id = created.value.farm_id;
   bad.structures = {House(1, 2400, 2800)};
   bad.players = {farm::StoredPlayer{1, 5, 1}, farm::StoredPlayer{999, 1, 1}};  // 없는 계정(외래 키 위반)
+  bad.clock = farm::StoredClock{2, 99};  // 시계는 트랜잭션에서 먼저 쓰인다. 뒤에서 실패하면 함께 취소되어야 한다
   const auto failed = Save(bad);
   EXPECT_FALSE(failed.ok);
   EXPECT_EQ(failed.error, FarmError::kFailure);
@@ -746,6 +754,7 @@ TEST_F(MySqlFarmRepositoryTest, ASaveThatFailsHalfwayChangesNothing) {
   ASSERT_TRUE(found.value.has_value());
   EXPECT_TRUE(found.value->structures.empty()) << "트랜잭션이 취소되어 구조물도 저장되지 않아야 한다";
   EXPECT_TRUE(found.value->players.empty());
+  EXPECT_FALSE(found.value->clock.has_value()) << "트랜잭션이 취소되어 시계도 저장되지 않아야 한다";
 
   // 연결이 정리되어 다음 저장은 정상으로 처리된다.
   farm::FarmSave good = bad;
@@ -801,6 +810,33 @@ TEST_F(MySqlFarmRepositoryTest, ConcurrentSavesAreAppliedInTheOrderTheyWereSent)
   EXPECT_EQ(Find(1).value->players[0].wood, static_cast<std::uint32_t>(kSaves)) << "마지막에 보낸 값이 최종 값이어야 한다";
 }
 
+TEST_F(MySqlFarmRepositoryTest, TheClockComesBackExactlyAndSavingItTwiceIsIdempotent) {
+  const auto created = Create(1, "123456");
+  ASSERT_TRUE(created.ok);
+  farm::FarmSave save;
+  save.farm_id = created.value.farm_id;
+  save.clock = farm::StoredClock{3, 4567};
+  ASSERT_TRUE(Save(save).ok);
+  ASSERT_TRUE(Save(save).ok) << "같은 값을 두 번 써도 같은 결과여야 한다(멱등)";
+  auto found = Find(1);
+  ASSERT_TRUE(found.ok) << found.message;
+  ASSERT_TRUE(found.value->clock.has_value());
+  EXPECT_EQ(found.value->clock->day, 3u);
+  EXPECT_EQ(found.value->clock->day_elapsed_ticks, 4567u);
+
+  save.clock = farm::StoredClock{4, 0};  // 밤 정산 뒤의 새 날
+  ASSERT_TRUE(Save(save).ok);
+  found = Find(1);
+  EXPECT_EQ(found.value->clock->day, 4u);
+  EXPECT_EQ(found.value->clock->day_elapsed_ticks, 0u);
+
+  farm::FarmSave without_clock;
+  without_clock.farm_id = created.value.farm_id;
+  without_clock.players = {farm::StoredPlayer{1, 1, 1}};
+  ASSERT_TRUE(Save(without_clock).ok);
+  EXPECT_EQ(Find(1).value->clock->day, 4u) << "시계를 싣지 않은 저장은 시계를 건드리지 않는다";
+}
+
 TEST_F(MySqlFarmRepositoryTest, AMissingTableGivesAReadableError) {
   auto repo = MySqlFarmRepository::Create(io_, options_, FarmTables{"no_farms_x", "no_structs_x", "no_players_x", kStatsTable});
   const auto found = Await<farm::FarmResult<std::optional<farm::FarmData>>>([&](auto h) { repo->FindFarmByOwner(1, h); });
@@ -818,13 +854,13 @@ TEST(MySqlFarmRepository, UnsafeTableNamesAreRejected) {
 
 // ============================================================ 서버 전체 + MySQL 농장
 
-server::ServerConfig FarmServerConfig(std::uint64_t flush_ticks = 100000) {
+server::ServerConfig FarmServerConfig(std::uint64_t flush_ticks = 100000, std::uint32_t bench_day_ticks = 10) {
   server::ServerConfig config = DefaultServerConfig();
   config.play.gather_range_cm = 100000.0f;
   config.play.gather_cooldown_ticks = 0;
   config.play.tree_hp = 1000;
   config.play.rock_hp = 1000;
-  config.play.bench_day_ticks = 10;  // 0.5초마다 밤 정산(완공)
+  config.play.bench_day_ticks = bench_day_ticks;  // 기본 10틱 = 0.5초마다 밤 정산(완공)
   config.play.farm_flush_interval_ticks = flush_ticks;
   return config;
 }
@@ -923,6 +959,44 @@ TEST_F(MySqlFarmServerTest, ASaveThatFailsDuringADatabaseOutageIsRetriedAndLands
     }
   }
   EXPECT_TRUE(saved) << "장애 뒤의 재시도로 채집량이 저장되어야 한다";
+}
+
+
+// 완료 기준 10: 서버를 껐다 켜도 날과 시각이 복원된다(docs/content-day.md).
+TEST_F(MySqlFarmServerTest, TheDayAndTheTimeOfDaySurviveAServerRestart) {
+  const auto config = FarmServerConfig(/*flush_ticks=*/100000, /*bench_day_ticks=*/40);  // 하루 2초
+  {
+    TestServer server(config, nullptr, RealHasher(), Accounts(), Farms());
+    auto alice = Connect(server);
+    ASSERT_EQ(RegisterAccount(*alice, "alice_01", "clock-password-1"), protocol::ACCOUNT_OK);
+    ASSERT_EQ(LoginAccount(*alice, "alice_01", "clock-password-1").result(), protocol::ACCOUNT_OK);
+    ASSERT_EQ(CreateRoom(*alice, "x").result(), protocol::GAME_OK);
+    protocol::DayStarted night;
+    ASSERT_TRUE(WaitMessage<protocol::DayStarted>(*alice, MessageId::kDayStarted, night,
+                                                  [](const protocol::DayStarted& d) { return d.clock().day() >= 2; },
+                                                  Millis(6000)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));  // 2일차 중간(경과 약 10틱)에서 끈다
+  }  // 서버를 끈다(종료 저장에 시계가 들어간다)
+
+  AdminConnection admin(options_);
+  ASSERT_TRUE(admin.ok()) << admin.error();
+  boost::mysql::results rows;
+  ASSERT_TRUE(admin.Execute(std::string("SELECT day, day_elapsed_ticks FROM `") + kFarmClockTable + "`", rows))
+      << admin.error();
+  ASSERT_EQ(rows.rows().size(), 1u) << "시계 행이 하나 저장되어야 한다";
+  const auto saved_day = FieldToUint64(rows.rows().at(0).at(0));
+  const auto saved_elapsed = FieldToUint64(rows.rows().at(0).at(1));
+  EXPECT_GE(saved_day, 2u);
+  EXPECT_LT(saved_elapsed, 40u);
+
+  TestServer restarted(config, nullptr, RealHasher(), Accounts(), Farms());
+  auto again = Connect(restarted);
+  ASSERT_EQ(LoginAccount(*again, "alice_01", "clock-password-1").result(), protocol::ACCOUNT_OK);
+  const auto reopened = CreateRoom(*again, "x");
+  ASSERT_EQ(reopened.result(), protocol::GAME_OK);
+  EXPECT_EQ(reopened.state().clock().day(), saved_day) << "같은 날에서 이어진다";
+  EXPECT_EQ(reopened.state().clock().day_start_tick(), -static_cast<std::int64_t>(saved_elapsed))
+      << "같은 시각(경과)에서 이어진다";
 }
 
 }  // namespace

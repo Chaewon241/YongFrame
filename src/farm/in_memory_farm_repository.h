@@ -41,7 +41,7 @@ class InMemoryFarmRepository : public FarmRepository {
   void SetDelay(std::chrono::milliseconds delay) { delay_ms_.store(delay.count()); }
   // 시험 준비: 농장을 미리 만들어 둔다(구조물/인벤토리 포함). 만든 농장을 돌려준다.
   FarmData Seed(std::uint64_t owner_account_id, std::string code, std::vector<StoredStructure> structures = {},
-                std::vector<StoredPlayer> players = {});
+                std::vector<StoredPlayer> players = {}, std::optional<StoredClock> clock = std::nullopt);
 
   std::size_t farm_count() const;
   std::uint64_t save_calls() const { return save_calls_.load(); }       // 성공한 SaveFarm 수

@@ -89,6 +89,25 @@ class FakeClient : public chat::ChatClient {
     return !delivered_.empty() && delivered_.back().first == expected;
   }
 
+  std::size_t CountOf(protocol::MessageId id) const {
+    std::size_t n = 0;
+    for (const auto& entry : delivered_) n += entry.first == id ? 1 : 0;
+    return n;
+  }
+
+  // id 종류 중 마지막으로 받은 메시지(없으면 기본값).
+  template <typename T>
+  T LastOf(protocol::MessageId id) const {
+    T message;
+    for (auto it = delivered_.rbegin(); it != delivered_.rend(); ++it) {
+      if (it->first == id) {
+        message.ParseFromString(it->second);
+        break;
+      }
+    }
+    return message;
+  }
+
  private:
   std::uint64_t id_;
   std::vector<std::pair<protocol::MessageId, std::string>> delivered_;

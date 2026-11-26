@@ -146,6 +146,9 @@ void InMemoryFarmRepository::SaveFarm(FarmSave save, SaveHandler handler) {
           farm.players.push_back(player);
         }
       }
+      if (save.clock) {
+        farm.clock = save.clock;
+      }
       if (accounts_) {
         for (const auto& entry : save.stats) {
           accounts_->SetStats(entry.account_id, entry.stats);
@@ -160,7 +163,8 @@ void InMemoryFarmRepository::SaveFarm(FarmSave save, SaveHandler handler) {
 }
 
 FarmData InMemoryFarmRepository::Seed(std::uint64_t owner_account_id, std::string code,
-                                      std::vector<StoredStructure> structures, std::vector<StoredPlayer> players) {
+                                      std::vector<StoredStructure> structures, std::vector<StoredPlayer> players,
+                                      std::optional<StoredClock> clock) {
   std::lock_guard lock(mutex_);
   FarmData data;
   data.farm_id = next_farm_id_++;
@@ -168,6 +172,7 @@ FarmData InMemoryFarmRepository::Seed(std::uint64_t owner_account_id, std::strin
   data.owner_account_id = owner_account_id;
   data.structures = std::move(structures);
   data.players = std::move(players);
+  data.clock = clock;
   farms_.emplace(data.farm_id, data);
   return data;
 }

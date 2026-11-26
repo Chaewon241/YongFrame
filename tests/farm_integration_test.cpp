@@ -371,6 +371,42 @@ TEST(FarmIntegration, AHouseClosedUnderConstructionIsStillBuildingWhenReopenedAn
   }, Millis(5000))) << "다시 열면 다음 밤 정산에 완공된다";
 }
 
+// ============================================================ 시계 (docs/content-day.md 7절)
+
+TEST(FarmIntegration, TheNightSavesTheNewDayOverTcp) {
+  TestServer server(FarmConfig(/*bench_day_ticks=*/10));  // 0.5초마다 밤 정산
+  auto alice = ConnectLoggedIn(server, "alice_01");
+  OpenFarmCode(*alice);
+  protocol::DayStarted night;
+  ASSERT_TRUE(WaitMessage<protocol::DayStarted>(*alice, MessageId::kDayStarted, night,
+                                                [](const protocol::DayStarted&) { return true; }));
+  EXPECT_TRUE(WaitUntil([&] {
+    const auto farm = server.farms().Get(1);
+    return farm && farm->clock && farm->clock->day >= 2;
+  })) << "밤 정산의 새 날이 저장되어야 한다";
+}
+
+TEST(FarmIntegration, AClosedFarmKeepsItsTimeOfDayAndContinuesFromItWhenReopened) {
+  TestServer server(FarmConfig(/*bench_day_ticks=*/200));  // 하루 10초: 시험 중에는 밤이 오지 않는다
+  auto alice = ConnectLoggedIn(server, "alice_01");
+  OpenFarmCode(*alice);
+  std::this_thread::sleep_for(Millis(500));  // 경과 약 10틱
+  ASSERT_EQ(LeaveRoom(*alice).result(), protocol::GAME_OK);
+  ASSERT_TRUE(WaitUntil([&] {
+    const auto farm = server.farms().Get(1);
+    return farm && farm->clock && farm->clock->day == 1u && farm->clock->day_elapsed_ticks > 0;
+  })) << "닫힐 때 닫힌 시각이 저장되어야 한다";
+  const auto saved_elapsed = server.farms().Get(1)->clock->day_elapsed_ticks;
+  EXPECT_LT(saved_elapsed, 200u);
+
+  std::this_thread::sleep_for(Millis(1000));  // 닫혀 있는 동안(약 20틱)에는 시간이 흐르지 않는다
+  const auto reopened = CreateRoom(*alice, "x");
+  ASSERT_EQ(reopened.result(), protocol::GAME_OK);
+  EXPECT_EQ(reopened.state().clock().day(), 1u);
+  EXPECT_EQ(reopened.state().clock().day_start_tick(), -static_cast<std::int64_t>(saved_elapsed))
+      << "닫힌 시각에서 이어진다";
+}
+
 // ============================================================ 여러 사람
 
 TEST(FarmIntegration, PlayersKeepSeparateInventoriesInTheSameFarm) {

@@ -59,7 +59,7 @@ float FieldFloat(boost::mysql::field_view field) {
 
 std::shared_ptr<MySqlFarmRepository> MySqlFarmRepository::Create(boost::asio::io_context& io,
                                                                  chat::MySqlOptions options, FarmTables tables) {
-  for (const std::string* name : {&tables.farms, &tables.structures, &tables.players, &tables.account_stats}) {
+  for (const std::string* name : {&tables.farms, &tables.structures, &tables.players, &tables.account_stats, &tables.clock}) {
     if (!IsSafeIdentifier(*name)) {
       throw std::invalid_argument("테이블 이름은 영문/숫자/밑줄만 쓸 수 있습니다: " + *name);
     }
@@ -93,6 +93,11 @@ MySqlFarmRepository::MySqlFarmRepository(boost::asio::io_context& io, chat::MySq
                         "` (account_id, wood_gathered, stone_gathered, houses_built, updated_at_unix_ms) "
                         "VALUES (?, ?, ?, ?, ?) AS new_row ON DUPLICATE KEY UPDATE wood_gathered = new_row.wood_gathered, "
                         "stone_gathered = new_row.stone_gathered, houses_built = new_row.houses_built, "
+                        "updated_at_unix_ms = new_row.updated_at_unix_ms"),
+      clock_sql_("SELECT day, day_elapsed_ticks FROM `" + tables_.clock + "` WHERE farm_id = ?"),
+      upsert_clock_sql_("INSERT INTO `" + tables_.clock +
+                        "` (farm_id, day, day_elapsed_ticks, updated_at_unix_ms) VALUES (?, ?, ?, ?) "
+                        "AS new_row ON DUPLICATE KEY UPDATE day = new_row.day, day_elapsed_ticks = new_row.day_elapsed_ticks, "
                         "updated_at_unix_ms = new_row.updated_at_unix_ms") {}
 
 // ============================================================ 작업 큐
@@ -162,16 +167,19 @@ asio::awaitable<bool> MySqlFarmRepository::EnsureReady(std::string& error) {
   }
 
   // 문장을 모두 준비한다. 하나라도 실패하면 연결을 버린다(농장 테이블이 없으면 여기서 실패한다).
-  const std::string* const sqls[8] = {&codes_sql_,           &find_sql_,           &structures_sql_,
-                                      &players_sql_,         &insert_farm_sql_,    &upsert_structure_sql_,
-                                      &upsert_player_sql_,   &upsert_stats_sql_};
-  boost::mysql::statement statements[8];
-  for (int i = 0; i < 8; ++i) {
+  constexpr int kStatements = 10;
+  const std::string* const sqls[kStatements] = {&codes_sql_,         &find_sql_,           &structures_sql_,
+                                                &players_sql_,       &insert_farm_sql_,    &upsert_structure_sql_,
+                                                &upsert_player_sql_, &upsert_stats_sql_,   &clock_sql_,
+                                                &upsert_clock_sql_};
+  boost::mysql::statement statements[kStatements];
+  for (int i = 0; i < kStatements; ++i) {
     diag.clear();
     statements[i] = co_await connection->async_prepare_statement(
         *sqls[i], diag, asio::cancel_after(options_.step_timeout, asio::redirect_error(asio::use_awaitable, ec)));
     if (ec) {
-      error = Describe("문장 준비 실패 (farms, farm_structures, farm_players 테이블이 있는지 db_migrate로 확인)", ec, diag);
+      error = Describe("문장 준비 실패 (farms, farm_structures, farm_players, farm_clock 테이블이 있는지 db_migrate로 확인)", ec,
+                       diag);
       co_return false;
     }
   }
@@ -185,6 +193,8 @@ asio::awaitable<bool> MySqlFarmRepository::EnsureReady(std::string& error) {
   upsert_structure_stmt_ = statements[5];
   upsert_player_stmt_ = statements[6];
   upsert_stats_stmt_ = statements[7];
+  clock_stmt_ = statements[8];
+  upsert_clock_stmt_ = statements[9];
   co_return true;
 }
 
@@ -286,6 +296,18 @@ asio::awaitable<bool> MySqlFarmRepository::ReadFarm(std::uint64_t owner, std::op
     player.stone = static_cast<std::uint32_t>(FieldU64(row.at(2)));
     data.players.push_back(player);
   }
+
+  boost::mysql::results clock_rows;
+  if (!co_await Run(clock_stmt_.bind(data.farm_id), clock_rows, error, "시계 조회 실패")) {
+    co_return false;
+  }
+  if (!clock_rows.rows().empty()) {  // 행이 없으면 이 조각 전에 만든 농장이다(비워 둔다)
+    const auto row = clock_rows.rows().at(0);
+    StoredClock clock;
+    clock.day = static_cast<std::uint32_t>(FieldU64(row.at(0)));
+    clock.day_elapsed_ticks = FieldU64(row.at(1));
+    data.clock = clock;
+  }
   out = std::move(data);
   co_return true;
 }
@@ -379,6 +401,15 @@ asio::awaitable<void> MySqlFarmRepository::DoSave(std::shared_ptr<MySqlFarmRepos
   }
   boost::mysql::results ignored;
   const std::int64_t now = NowUnixMillis();
+  // 시계를 먼저 쓴다. 뒤의 문장이 실패하면 시계도 함께 취소되는지 시험이 확인할 수 있게 하는 순서다.
+  if (save.clock) {
+    if (!co_await self->Run(self->upsert_clock_stmt_.bind(save.farm_id, save.clock->day, save.clock->day_elapsed_ticks, now),
+                            ignored, error, "시계 저장 실패")) {
+      abort_save(error);
+      handler(std::move(result));
+      co_return;
+    }
+  }
   for (const StoredStructure& s : save.structures) {
     if (!co_await self->Run(self->upsert_structure_stmt_.bind(save.farm_id, s.structure_id, s.type, s.x, s.y, s.state,
                                                               s.remaining_ticks, s.built_by_account_id),

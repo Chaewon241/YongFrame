@@ -1,6 +1,6 @@
 # 콘텐츠 조각 2: 하루와 잠 (설계)
 
-> 상태: **서버 S0의 1·2단계(순수 로직, 프로토콜과 GameService) 구현 완료, 3단계(시계 저장) 이후와 Unreal은 남음.** 진행 상태는 13절. 아래 1~12절은 구현 전에 확정한 설계이며, 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
+> 상태: **서버 S0의 1~3단계(순수 로직, 프로토콜과 GameService, 시계 저장) 구현 완료, 4단계(도구) 이후와 Unreal은 남음.** 진행 상태는 13절. 아래 1~12절은 구현 전에 확정한 설계이며, 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
 
 ## 1. 목표
 
@@ -297,13 +297,13 @@ message Landmark {
 | --- | --- | --- |
 | S0-1 | `PlayConfig` 값, `Room`/`ResourceField`/`StructureSet`/`World`의 순수 로직(시계, 잠, 정산 판정, `RunNight`, 시작 집 장애물), 단위 시험 | 완료(Windows) |
 | S0-2 | proto(116~119, `DayClock`, `Landmark`, `RoomState` 7~9, 결과 코드 21~22), `GameService`(`HandleSleep`, 틱 순서, 알림 순서, 통계), `Session` 연결, 통합 시험 | 완료(Windows) |
-| S0-3 | 시계 저장(마이그레이션 004, `StoredClock`, 저장소, `FarmPersistence` 저장 시점, 복원 규칙) | 남음 |
+| S0-3 | 시계 저장(마이그레이션 004, `StoredClock`, 저장소, `FarmPersistence` 저장 시점, 복원 규칙) | 완료(Windows, 인메모리 저장소로 시험. 실제 MySQL 시험은 사용자가 실행) |
 | S0-4 | `game_client`(`/sleep`, `/wake`, `/clock`), `game_load_client`(새 메시지 견디기), 서버 `--bench-day-ticks` | 남음 |
-| S0-5 | 완료 기준 14의 변형 검증 | 남음(핵심 3가지만 미리 확인, 아래) |
-| S0-6 | 문서(stage4.md 프로토콜 표, persistence.md 스키마, unreal-client.md 기준 바이트, CLAUDE.md 명령과 코드 구조) | 남음(이 절과 CLAUDE.md 현재 상태만 갱신) |
+| S0-5 | 완료 기준 14의 변형 검증 | 남음(8가지만 미리 확인, 아래) |
+| S0-6 | 문서(stage4.md 프로토콜 표, persistence.md 스키마, unreal-client.md 기준 바이트, CLAUDE.md 명령과 코드 구조) | 남음(이 절, CLAUDE.md 현재 상태와 계정 MySQL 시험 명령만 갱신) |
 | S1~S3 | Unreal | 남음 |
 
-**S0-3 전까지의 한계:** 농장을 닫았다 열면 시계가 1일차 경과 0으로 돌아간다(저장하지 않는다). `Room::RestoreClock`/`ExportClock`은 만들어 두었고 단위 시험도 있지만 `GameService`가 아직 부르지 않는다. 서버 옵션 `--bench-day-ticks`도 아직 없다(`PlayConfig::bench_day_ticks`는 시험에서만 쓴다). 현재 Unreal 클라이언트와 `game_load_client`는 117~119를 모르므로, 10분(기본 하루)이 넘게 접속해 있으면 `DayStarted`를 받는다.
+**S0-4 전까지의 한계:** 서버 옵션 `--bench-day-ticks`가 아직 없다(`PlayConfig::bench_day_ticks`는 시험에서만 쓴다). 현재 Unreal 클라이언트와 `game_load_client`는 117~119를 모르므로, 10분(기본 하루)이 넘게 접속해 있으면 `DayStarted`를 받는다. 운영 DB에는 `db_migrate`로 004를 적용해야 `--storage mysql` 서버가 농장 저장소 문장을 준비할 수 있다(없으면 농장 열기가 `GAME_STORAGE_UNAVAILABLE`).
 
 ### 구현 중 정한 세부 사항
 
@@ -316,6 +316,15 @@ message Landmark {
 - **`SleepUpdate` 조건:** 마지막으로 보낸 목록과 지금 목록이 다를 때만 보낸다(`Room::TakeSleepChange`). 그래서 같은 틱 안의 잠/깸 반복, 잠든 사람이 없던 강제 정산, 틱 사이에 잠들었다 바로 나간 경우에는 보내지 않는다. 정산 전에 잠든 사람이 있었으면 정산 틱에 빈 목록을 보낸다.
 - **농장의 밤 정산 저장:** 완공된 집이 없어도 정산마다 구조물을 대기열에 넣고 바로 저장한다(S0-3에서 시계가 같은 저장에 들어간다).
 - **통계:** 설계의 "틱 시간 분해의 새 항목"은 `틱시간{}` 묶음 안에 넣지 않고 별도 묶음으로 두었다. `results/stage4/analyze_*.py`가 `틱시간\{이동= 갱신= 구성= 전송= 합=\}` 모양을 정규식으로 그대로 읽기 때문이다. 줄 모양: `하루{정산=N 강제=N 정산시간=Nus 최대정산=Nus 잠=N 잠거부=N}`. 정산 시간은 `갱신`에서 빼고 따로 센다(합 = 이동 + 갱신 + 구성 + 전송 + 정산 + 기타). `잠`, `잠거부`는 설계에 없던 항목이고, 잠 요청 거부는 `requests_rejected`에 세지 않는다. `aggregate.py`의 정규식(`최대틱처리=…us[^}]*\}`)은 영향이 없다.
+
+### 시계 저장에서 정한 세부 사항 (S0-3)
+
+- **저장 형식:** `farm::StoredClock{day, day_elapsed_ticks}`. `FarmData::clock`과 `FarmSave::clock`은 `std::optional`이고, `FarmSave`에 시계가 없으면 시계 행을 건드리지 않는다. MySQL 테이블 이름 옵션 `FarmTables::clock`(기본 `farm_clock`, 시험은 `farm_clock_test`).
+- **트랜잭션 안의 순서:** MySQL 구현은 시계를 **가장 먼저** upsert한다. 뒤의 구조물/인벤토리 문장이 실패하면 시계도 함께 취소되는지를 시험이 확인할 수 있게 하려는 순서다(시험: `ASaveThatFailsHalfwayChangesNothing`).
+- **"주기 저장은 어차피 저장할 때만 싣는다"의 구현:** `FarmPersistence::SetClockSource`. `GameService`가 열린 농장의 지금 시계를 알려 주는 함수를 넘기고, `Flush`가 저장 묶음을 만들 때 그 값을 싣는다. 열린 농장이면 이 값이 대기열의 시계보다 우선한다(가장 새 값). 닫힌 농장은 대기열의 값(닫힌 시각)을 쓴다. 시계 출처는 대기열을 비어 있지 않게 만들지 않으므로, 시계만 흐른 농장은 주기마다 쓰지 않는다. `UpdateClock`(밤 정산, 농장 닫힘, 서버 종료)은 대기열에 넣어 저장을 일으킨다.
+- **실패한 시계:** 대기열로 되돌린다. 그사이 더 새 시계가 들어왔으면 새 값이 이긴다(다른 값과 같은 규칙).
+- **복원:** `FinishOpenFarm`이 새로 여는 농장에만 `Room::RestoreClock`을 부른다(이미 열려 있는 농장에 들어가는 경우는 방의 시계 그대로). 저장된 경과가 하루 길이 이상이면 경고 로그를 남긴다(같으면 자르지 않아도 다음 틱에 강제 정산된다).
+- **열린 농장 찾기:** 시계 출처가 farm_id로 방을 찾도록 `GameService::open_farm_codes_`(farm_id → 방 코드)를 둔다. 농장이 닫힐 때 지운다.
 
 ### 고친 기존 시험과 이유
 
@@ -340,9 +349,19 @@ message Landmark {
 | game_integration_test | `APlayerWalkingIntoABuiltHouse…`, `TheTickKeepsRunning…`, 건설 좌표 | 시작 집과 겹쳐 옮김 |
 | farm_integration_test | `CompletionIsSavedImmediately` → `CompletionAtTheNightIsSavedImmediately`, `BuildingIsSavedImmediately…`(남은 틱 0) | 완공이 밤 정산으로 |
 | farm_integration_test | `ConstructionProgressIsSavedAndTheClosedFarmDoesNotAdvanceTime` → `AHouseClosedUnderConstructionIsStillBuildingWhenReopenedAndCompletesAtTheNextNight` | 남은 틱 규칙이 없어졌다. "닫혀 있는 동안 시간이 흐르지 않는다"는 S0-3의 시계 저장 시험에서 다시 확인한다 |
-| account_mysql_test | `FarmServerConfig`(`build_ticks` → `bench_day_ticks` 10), 건설 좌표 | 같음. **실행하지 못했다(사용자가 실행)** |
+| account_mysql_test | `FarmServerConfig`(`build_ticks` → `bench_day_ticks` 10, 인자로 바꿀 수 있게), 건설 좌표 | 같음. **실행하지 못했다(사용자가 실행)** |
+| account_mysql_test | `ResetTestTables`(004도 적용, `farm_clock_test`), `ACreatedFarmCanBeFoundByItsOwnerOnly`(시계 없음), `ASaveThatFailsHalfwayChangesNothing`(시계도 취소) | S0-3 시계 저장 |
 
 시험 설정 `FarmConfig`/`BuildServerConfig`/`GatherServerConfig`의 인자는 `bench_day_ticks`로 바뀌었고 기본값 0(시험 중에 밤이 오지 않음)이다. 밤이 오면 농장이 바로 저장되므로, 주기 저장을 확인하는 시험에 밤이 섞이지 않게 했다.
+
+### 검증 결과 (S0-3)
+
+- `ctest` 전체(Debug): **S0-2 뒤 665개 → 684개(통과 647, MySQL 37 건너뜀, 실패 0)**, 두 번 실행해 같았다. 새로 더한 것:
+  - `farm_persistence_test` 4개: 시계만으로 저장, 주기 저장은 다른 변경이 있을 때만 지금 시계를 실음, 열린 농장은 지금 시계/닫힌 농장은 넣어 둔 시계, 실패한 시계 보존과 새 값 우선.
+  - `farm_service_test` 8개(시계를 직접 돌리는 결정적 시험): 밤 정산 저장이 주기 저장 없이 바로 됨, **경과 5,000에 닫고(그동안 서버의 다른 방은 3,000틱 흐름) 다시 열면 6,999틱에는 아직이고 7,000틱에 강제 정산**, 시계 행 없는 옛 농장은 1일차 경과 0, 하루 길이보다 긴 경과는 다음 틱에 강제 정산, 저장된 건설 중인 집은 남은 틱과 상관없이 다음 밤에 완공되어 저장, 밤 정산 저장 실패에도 게임이 계속되고 다음 주기에 저장, 시계만 흐른 농장은 주기 저장하지 않음, 서버 종료가 시계를 저장, 게스트 방은 저장하지 않음.
+  - `farm_integration_test` 2개(실제 TCP와 타이머, 각각 `_io4` 포함): 밤 정산의 새 날 저장, 닫힌 시각에서 이어서 열림.
+  - `account_mysql_test` 2개(**사용자가 실행**): 시계 왕복과 멱등, 시계를 싣지 않은 저장은 시계를 건드리지 않음 / 서버를 껐다 켜도 날과 시각(경과)이 복원됨. 기존 2개에 시계 확인을 더했다.
+- 미리 확인한 저장 관련 변형 5가지: "닫을 때 시계 저장 뺌"은 **살아남았고 동등 변형이다**. 농장이 닫힐 때는 나가는 사람의 인벤토리 때문에 어차피 저장이 일어나고, 그 순간 방이 아직 있어 시계 출처가 지금 시계(= 닫힌 시각)를 싣는다. 두 장치가 겹쳐 있어서 하나를 빼도 결과가 같다(시계 출처를 빼는 변형은 잡혔다). "복원 때 경과 무시", "정산 저장을 주기 저장으로 미룸", "시계 출처 제거", "실패한 시계를 되돌리지 않음"은 모두 시험이 잡았다.
 
 ### 검증 결과 (S0-1, S0-2)
 

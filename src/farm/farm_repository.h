@@ -9,7 +9,7 @@
 //  - **같은 저장소 객체의 요청은 호출한 순서대로 처리한다**(FIFO). 저장은 "지금의 값"(절대값)을 덮어쓰는 방식이라 순서가
 //    뒤바뀌면 오래된 값이 최신 값을 덮어쓴다.
 //
-// SaveFarm은 한 번의 호출이 하나의 트랜잭션이다(전부 반영되거나 전부 반영되지 않는다). 같은 값을 두 번 써도 결과가
+// SaveFarm은 한 번의 호출이 하나의 트랜잭션이다(구조물, 인벤토리, 누적 기록, 시계가 전부 반영되거나 전부 반영되지 않는다). 같은 값을 두 번 써도 결과가
 // 같으므로(멱등) 실패한 저장은 나중에 그대로 다시 보내도 된다.
 
 #include <cstdint>
@@ -33,6 +33,12 @@ struct StoredStructure {
   std::uint64_t built_by_account_id = 0;  // 지은 사람(모르면 0)
 };
 
+// 농장의 시계(docs/content-day.md 7절). 농장이 닫혀 있는 동안 시간은 흐르지 않으므로 다시 열면 이 값에서 이어진다.
+struct StoredClock {
+  std::uint32_t day = 1;                  // 1부터
+  std::uint64_t day_elapsed_ticks = 0;    // 저장할 때의 그날 경과 틱
+};
+
 // (농장, 계정)별 인벤토리.
 struct StoredPlayer {
   std::uint64_t account_id = 0;
@@ -52,6 +58,7 @@ struct FarmData {
   std::uint64_t owner_account_id = 0;
   std::vector<StoredStructure> structures;  // 번호 순서
   std::vector<StoredPlayer> players;
+  std::optional<StoredClock> clock;  // 시계 행이 없으면 비어 있다(서버는 1일차 경과 0으로 본다)
 };
 
 // 한 번에 저장할 묶음. 모두 절대값이다. 비어 있는 목록은 건드리지 않는다.
@@ -60,8 +67,9 @@ struct FarmSave {
   std::vector<StoredStructure> structures;
   std::vector<StoredPlayer> players;
   std::vector<StoredAccountStats> stats;
+  std::optional<StoredClock> clock;  // 있으면 시계도 같은 트랜잭션에서 덮어쓴다
 
-  bool empty() const { return structures.empty() && players.empty() && stats.empty(); }
+  bool empty() const { return structures.empty() && players.empty() && stats.empty() && !clock; }
 };
 
 enum class FarmError {

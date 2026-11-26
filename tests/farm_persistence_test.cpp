@@ -228,5 +228,77 @@ TEST(FarmPersistence, SeparateFarmsAreSavedIndependently) {
   EXPECT_EQ(f.SavedWood(), 0xFFFFFFFEu);
 }
 
+
+// ============================================================ 시계 (docs/content-day.md 7절)
+
+TEST(FarmPersistence, AQueuedClockAloneIsSavedOnFlush) {
+  Fixture f;
+  f.persistence->UpdateClock(f.farm.farm_id, farm::StoredClock{3, 120});
+  EXPECT_TRUE(f.persistence->HasPending(f.farm.farm_id)) << "시계만으로도 저장할 것이 있다";
+  f.persistence->Flush(f.farm.farm_id);
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->save_calls() == 1; }));
+  const auto saved = f.repo->Get(kOwner);
+  ASSERT_TRUE(saved->clock.has_value());
+  EXPECT_EQ(saved->clock->day, 3u);
+  EXPECT_EQ(saved->clock->day_elapsed_ticks, 120u);
+}
+
+TEST(FarmPersistence, ThePeriodicSaveCarriesTheLiveClockOnlyWhenSomethingElseChanged) {
+  Fixture f(/*interval=*/10);
+  f.persistence->SetClockSource([](std::uint64_t) { return std::optional<farm::StoredClock>(farm::StoredClock{2, 77}); });
+  f.persistence->OnTick(10);
+  f.Settle();
+  EXPECT_EQ(f.repo->save_calls(), 0u) << "시계만 바뀐 농장은 주기마다 쓰지 않는다";
+
+  f.persistence->UpdatePlayer(f.farm.farm_id, f.Player(kOwner, 4), std::nullopt);
+  f.persistence->OnTick(10);
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->save_calls() == 1; }));
+  const auto saved = f.repo->Get(kOwner);
+  ASSERT_TRUE(saved->clock.has_value()) << "다른 변경을 저장할 때 지금 시계를 함께 싣는다";
+  EXPECT_EQ(saved->clock->day, 2u);
+  EXPECT_EQ(saved->clock->day_elapsed_ticks, 77u);
+}
+
+TEST(FarmPersistence, AnOpenFarmSavesItsLiveClockAndAClosedFarmItsQueuedClock) {
+  Fixture f;
+  std::optional<farm::StoredClock> live = farm::StoredClock{1, 60};
+  f.persistence->SetClockSource([&live](std::uint64_t) { return live; });
+  f.persistence->UpdateClock(f.farm.farm_id, farm::StoredClock{1, 50});
+  f.persistence->Flush(f.farm.farm_id);
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->save_calls() == 1; }));
+  EXPECT_EQ(f.repo->Get(kOwner)->clock->day_elapsed_ticks, 60u) << "열린 농장은 지금 시계가 가장 새 값이다";
+
+  live.reset();  // 농장이 닫혔다
+  f.persistence->UpdateClock(f.farm.farm_id, farm::StoredClock{1, 70});
+  f.persistence->Flush(f.farm.farm_id);
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->save_calls() == 2; }));
+  EXPECT_EQ(f.repo->Get(kOwner)->clock->day_elapsed_ticks, 70u) << "닫힌 농장은 넣어 둔 값(닫힌 시각)";
+}
+
+TEST(FarmPersistence, AFailedSaveKeepsTheClockAndANewerClockWins) {
+  Fixture f;
+  f.repo->SetSaveFailing(true);
+  f.persistence->UpdateClock(f.farm.farm_id, farm::StoredClock{4, 5});
+  f.persistence->Flush(f.farm.farm_id);
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->failed_saves() == 1; }));
+  EXPECT_TRUE(f.persistence->HasPending(f.farm.farm_id)) << "실패한 시계는 대기열로 돌아온다";
+  f.repo->SetSaveFailing(false);
+  f.persistence->Flush(f.farm.farm_id);
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->save_calls() == 1; }));
+  EXPECT_EQ(f.repo->Get(kOwner)->clock->day, 4u);
+  EXPECT_EQ(f.repo->Get(kOwner)->clock->day_elapsed_ticks, 5u);
+
+  // 저장하는 동안 더 새로운 시계가 들어오면, 저장이 실패해도 새 값이 이긴다.
+  f.repo->SetSaveFailing(true);
+  f.persistence->UpdateClock(f.farm.farm_id, farm::StoredClock{5, 10});
+  f.persistence->Flush(f.farm.farm_id);
+  f.persistence->UpdateClock(f.farm.farm_id, farm::StoredClock{5, 20});
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->failed_saves() == 2; }));
+  f.repo->SetSaveFailing(false);
+  f.persistence->Flush(f.farm.farm_id);
+  ASSERT_TRUE(PumpUntil(f.io, [&] { return f.repo->save_calls() == 2; }));
+  EXPECT_EQ(f.repo->Get(kOwner)->clock->day_elapsed_ticks, 20u);
+}
+
 }  // namespace
 }  // namespace game::play

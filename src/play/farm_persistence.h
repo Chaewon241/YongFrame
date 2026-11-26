@@ -9,11 +9,15 @@
 //  - 저장이 실패해도 게임은 계속된다. 실패한 값은 대기열에 남아(더 새로운 값이 있으면 그것이 이긴다) 다음 주기에 다시
 //    저장한다. 저장은 절대값 덮어쓰기라 같은 값을 다시 써도 안전하다(멱등).
 //  - 농장 하나당 진행 중인 저장은 한 번에 하나다. 저장 중에 새 변경이 생기면 그 저장이 끝난 뒤에 이어서 저장한다.
+//  - 시계(docs/content-day.md 7절): 밤 정산과 농장이 닫힐 때는 GameService가 UpdateClock으로 넣고 바로 저장한다. 그 밖의
+//    저장(주기 저장 포함)에는 시계 출처(SetClockSource)가 알려 주는 열린 농장의 지금 시계를 **함께 싣기만** 한다. 시계는
+//    매 틱 바뀌므로 시계만 바뀐 농장을 주기마다 쓰지는 않는다.
 //
 // 스레드 규칙: 모든 함수와 저장소 핸들러는 서버의 로직 스레드에서만 실행된다.
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -52,6 +56,13 @@ class FarmPersistence : public std::enable_shared_from_this<FarmPersistence> {
   void UpdatePlayer(std::uint64_t farm_id, const farm::StoredPlayer& player,
                     const std::optional<account::AccountStats>& stats);
 
+  // 이 농장의 시계(절대값)를 대기열에 넣는다. 이것만으로도 대기열이 비어 있지 않게 된다(다음 Flush에 저장된다).
+  void UpdateClock(std::uint64_t farm_id, const farm::StoredClock& clock);
+
+  // 저장할 때 함께 실을 "지금 시계"를 알려 주는 함수. 농장이 열려 있지 않으면 비워 돌려준다(그러면 대기열의 시계를 쓴다).
+  using ClockSource = std::function<std::optional<farm::StoredClock>(std::uint64_t farm_id)>;
+  void SetClockSource(ClockSource source) { clock_source_ = std::move(source); }
+
   // 이 농장의 대기열을 지금 저장한다(비어 있으면 아무것도 안 한다). 이미 저장 중이면 그것이 끝난 뒤에 이어서 저장한다.
   void Flush(std::uint64_t farm_id);
 
@@ -69,9 +80,10 @@ class FarmPersistence : public std::enable_shared_from_this<FarmPersistence> {
     std::map<std::uint32_t, farm::StoredStructure> structures;
     std::map<std::uint64_t, farm::StoredPlayer> players;
     std::map<std::uint64_t, account::AccountStats> stats;
+    std::optional<farm::StoredClock> clock;
     bool inflight = false;         // 저장소에 보낸 저장이 아직 끝나지 않았다
     bool flush_when_idle = false;  // 저장 중에 새 변경이 생겼으니, 끝나면 이어서 저장한다
-    bool empty() const { return structures.empty() && players.empty() && stats.empty(); }
+    bool empty() const { return structures.empty() && players.empty() && stats.empty() && !clock; }
   };
 
   FarmPersistence(std::shared_ptr<farm::FarmRepository> repository, std::uint64_t flush_interval_ticks)
@@ -85,6 +97,7 @@ class FarmPersistence : public std::enable_shared_from_this<FarmPersistence> {
   std::uint64_t ticks_since_flush_ = 0;
   bool shutting_down_ = false;
   std::map<std::uint64_t, Pending> farms_;
+  ClockSource clock_source_;
   PersistenceStats stats_;
 };
 

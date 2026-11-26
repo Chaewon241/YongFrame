@@ -214,6 +214,7 @@ class GameService {
   std::shared_ptr<farm::FarmRepository> farm_repo_;
   std::shared_ptr<FarmPersistence> persistence_;
   std::unordered_map<std::string, FarmRuntime> farms_;  // 열려 있는 농장. 키: 방 코드
+  std::unordered_map<std::uint64_t, std::string> open_farm_codes_;  // 열려 있는 농장의 farm_id -> 방 코드(시계 출처용)
   std::unordered_set<std::string> reserved_codes_;      // 농장 코드(DB에 있는 것). 게스트 방은 이 코드를 쓰지 않는다
   std::unordered_set<std::uint64_t> opening_;           // 농장을 여는 중인 연결(저장소 응답을 기다린다)
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // 저장소 핸들러가 서비스가 아직 있는지 확인하는 표지

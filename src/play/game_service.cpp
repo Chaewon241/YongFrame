@@ -55,6 +55,8 @@ protocol::Structure MakeStructure(const Structure& structure) {
   return out;
 }
 
+farm::StoredClock ToStoredClock(const ClockState& clock) { return farm::StoredClock{clock.day, clock.elapsed_ticks}; }
+
 protocol::PlayerInfo MakePlayerInfo(const Member& member) {
   protocol::PlayerInfo info;
   info.set_player_id(member.player_id);
@@ -93,6 +95,18 @@ GameService::GameService(boost::asio::io_context& io, PlayConfig config, RoomCod
 void GameService::SetFarmRepository(std::shared_ptr<farm::FarmRepository> repository) {
   farm_repo_ = std::move(repository);
   persistence_ = farm_repo_ ? FarmPersistence::Create(farm_repo_, config_.farm_flush_interval_ticks) : nullptr;
+  if (persistence_) {
+    // 저장할 때 열려 있는 농장이면 지금 시계를 함께 싣는다(docs/content-day.md 7절). 닫힌 농장은 대기열의 값을 쓴다.
+    persistence_->SetClockSource(
+        [this, alive = std::weak_ptr<bool>(alive_)](std::uint64_t farm_id) -> std::optional<farm::StoredClock> {
+          if (alive.expired()) return std::nullopt;
+          const auto code = open_farm_codes_.find(farm_id);
+          if (code == open_farm_codes_.end()) return std::nullopt;
+          const auto room = rooms_.find(code->second);
+          if (room == rooms_.end()) return std::nullopt;
+          return ToStoredClock(room->second->ExportClock());
+        });
+  }
 }
 
 void GameService::LoadFarmCodes() {
@@ -363,6 +377,7 @@ void GameService::RemoveFromRoom(std::uint64_t client_id) {
   if (room.is_farm()) {
     PersistLeaver(room, result.member, account_id);
     if (room.Empty()) {
+      open_farm_codes_.erase(room.farm_id());
       farms_.erase(code);  // 농장이 닫혔다. 코드는 예약된 채로 남는다(reserved_codes_)
     }
   }
@@ -612,8 +627,9 @@ void GameService::Tick(std::uint32_t steps) {
       stats_.nodes_respawned += report.respawned;
       stats_.structures_completed += report.completed;
       if (room.is_farm() && persistence_) {
-        // 밤 정산은 바로 저장한다(완공된 구조물. 시계 저장은 docs/content-day.md 7절).
+        // 밤 정산은 바로 저장한다: 완공된 구조물과 새 날의 시계(경과 0). docs/content-day.md 7절.
         persistence_->UpdateStructures(room.farm_id(), ExportStructures(room));
+        persistence_->UpdateClock(room.farm_id(), ToStoredClock(room.ExportClock()));
         persistence_->Flush(room.farm_id());
       }
       const auto night_time = Clock::now() - t1;
@@ -759,6 +775,7 @@ void GameService::Shutdown() {
       Room& room = *entry.second;
       if (!room.is_farm()) continue;
       persistence_->UpdateStructures(room.farm_id(), ExportStructures(room));
+      persistence_->UpdateClock(room.farm_id(), ToStoredClock(room.ExportClock()));
       for (const Member& member : room.members()) {
         const auto connection = connections_.find(member.client_id);
         if (connection == connections_.end() || connection->second.account_id == 0) continue;
@@ -908,12 +925,22 @@ void GameService::FinishOpenFarm(const std::shared_ptr<GameClient>& client, cons
         return fail(protocol::GAME_STORAGE_UNAVAILABLE);
       }
     }
+    // 시계: 닫힌 날, 닫힌 시각에서 이어진다(닫혀 있는 동안 시간은 흐르지 않는다). 시계 행이 없으면(이 조각 전에 만든 농장)
+    // 새 방 그대로 1일차 경과 0이다. 경과가 하루 길이 이상이면 하루 길이로 두어 다음 틱에 강제 정산한다.
+    if (data.clock) {
+      if (data.clock->day_elapsed_ticks >= config_.DayLengthTicks()) {
+        Log(LogLevel::kWarn, "[농장] 저장된 경과 틱이 하루 길이 이상이라 다음 틱에 강제 정산 farm=", data.farm_id,
+            " 날=", data.clock->day, " 경과=", data.clock->day_elapsed_ticks, " 하루=", config_.DayLengthTicks());
+      }
+      opened->RestoreClock(data.clock->day, data.clock->day_elapsed_ticks);
+    }
     FarmRuntime runtime;
     runtime.farm_id = data.farm_id;
     runtime.owner_account_id = data.owner_account_id;
     for (const farm::StoredPlayer& stored : data.players) runtime.players[stored.account_id] = stored;
     for (const farm::StoredStructure& stored : data.structures) runtime.builders[stored.structure_id] = stored.built_by_account_id;
     farms_[data.code] = std::move(runtime);
+    open_farm_codes_[data.farm_id] = data.code;
     reserved_codes_.insert(data.code);
     room = opened.get();
     rooms_.emplace(data.code, std::move(opened));
@@ -1013,8 +1040,9 @@ void GameService::PersistLeaver(Room& room, const Member& member, std::uint64_t 
   }
   persistence_->UpdatePlayer(room.farm_id(), player, hooks_.stats_of ? hooks_.stats_of(member.client_id) : std::nullopt);
   if (room.Empty()) {
-    // 농장이 닫힌다: 구조물의 마지막 상태(건설 중이면 남은 틱)를 함께 저장한다.
+    // 농장이 닫힌다: 구조물의 마지막 상태와 닫힌 시각의 시계를 함께 저장한다(다시 열면 여기서 이어진다).
     persistence_->UpdateStructures(room.farm_id(), ExportStructures(room));
+    persistence_->UpdateClock(room.farm_id(), ToStoredClock(room.ExportClock()));
   }
   persistence_->Flush(room.farm_id());
 }

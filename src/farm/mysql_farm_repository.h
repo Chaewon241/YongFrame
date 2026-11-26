@@ -8,7 +8,7 @@
 //  4. 오류가 나면 연결을 버린다. 다음 작업이 새로 연결한다(진행 중이던 트랜잭션은 연결이 닫히며 취소된다).
 //  5. 쿼리는 모두 준비된 문장에 값을 바인딩해서 보낸다(SQL 인젝션 불가).
 //
-// SaveFarm은 한 번의 호출이 하나의 트랜잭션이다: START TRANSACTION, 구조물/인벤토리/누적 기록의 upsert(절대값), COMMIT.
+// SaveFarm은 한 번의 호출이 하나의 트랜잭션이다: START TRANSACTION, 구조물/인벤토리/누적 기록/시계의 upsert(절대값), COMMIT.
 // 중간에 하나라도 실패하면 연결을 버려 트랜잭션이 취소되고, 호출한 쪽은 같은 묶음을 그대로 다시 보내도 된다(멱등).
 //
 // 스레드 규칙: 모든 함수는 서버의 io_context(로직) 스레드에서만 부른다.
@@ -32,6 +32,7 @@ struct FarmTables {
   std::string structures = "farm_structures";
   std::string players = "farm_players";
   std::string account_stats = "account_stats";  // 계정 누적 기록(계정 저장소와 같은 테이블)
+  std::string clock = "farm_clock";              // 농장 시계(마이그레이션 004)
 };
 
 class MySqlFarmRepository : public FarmRepository, public std::enable_shared_from_this<MySqlFarmRepository> {
@@ -89,6 +90,8 @@ class MySqlFarmRepository : public FarmRepository, public std::enable_shared_fro
   const std::string upsert_structure_sql_;
   const std::string upsert_player_sql_;
   const std::string upsert_stats_sql_;
+  const std::string clock_sql_;
+  const std::string upsert_clock_sql_;
 
   std::unique_ptr<boost::mysql::any_connection> connection_;  // 연결 전/오류 뒤에는 null
   boost::mysql::statement codes_stmt_;
@@ -99,6 +102,8 @@ class MySqlFarmRepository : public FarmRepository, public std::enable_shared_fro
   boost::mysql::statement upsert_structure_stmt_;
   boost::mysql::statement upsert_player_stmt_;
   boost::mysql::statement upsert_stats_stmt_;
+  boost::mysql::statement clock_stmt_;
+  boost::mysql::statement upsert_clock_stmt_;
 
   std::deque<Operation> queue_;
   bool running_ = false;

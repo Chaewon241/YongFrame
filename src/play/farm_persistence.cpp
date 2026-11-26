@@ -55,6 +55,11 @@ void FarmPersistence::UpdatePlayer(std::uint64_t farm_id, const farm::StoredPlay
   RefreshPendingGauge();
 }
 
+void FarmPersistence::UpdateClock(std::uint64_t farm_id, const farm::StoredClock& clock) {
+  farms_[farm_id].clock = clock;
+  RefreshPendingGauge();
+}
+
 bool FarmPersistence::HasPending(std::uint64_t farm_id) const {
   const auto it = farms_.find(farm_id);
   return it != farms_.end() && (!it->second.empty() || it->second.inflight);
@@ -80,9 +85,17 @@ void FarmPersistence::Flush(std::uint64_t farm_id) {
   for (auto& entry : pending.structures) save.structures.push_back(std::move(entry.second));
   for (auto& entry : pending.players) save.players.push_back(std::move(entry.second));
   for (auto& entry : pending.stats) save.stats.push_back(farm::StoredAccountStats{entry.first, entry.second});
+  // 시계: 농장이 열려 있으면 지금 시계가 가장 새 값이다. 닫혀 있으면 대기열에 넣어 둔 값(닫힌 시각)을 쓴다.
+  save.clock = pending.clock;
+  if (clock_source_) {
+    if (const auto live = clock_source_(farm_id)) {
+      save.clock = live;
+    }
+  }
   pending.structures.clear();
   pending.players.clear();
   pending.stats.clear();
+  pending.clock.reset();
   pending.inflight = true;
   ++stats_.flushes;
   RefreshPendingGauge();
@@ -111,6 +124,9 @@ void FarmPersistence::OnSaved(std::uint64_t farm_id, farm::FarmSave save, const 
     for (auto& structure : save.structures) pending.structures.emplace(structure.structure_id, std::move(structure));
     for (auto& player : save.players) pending.players.emplace(player.account_id, std::move(player));
     for (auto& entry : save.stats) pending.stats.emplace(entry.account_id, entry.stats);
+    if (save.clock && !pending.clock) {
+      pending.clock = save.clock;
+    }
   }
 
   // 저장 중에 쌓인 변경이 있으면 이어서 저장한다. 실패한 직후에는 바로 다시 시도하지 않는다(다음 주기에 다시 한다).
