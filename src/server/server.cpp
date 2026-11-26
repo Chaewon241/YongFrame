@@ -120,7 +120,8 @@ Server::~Server() {
 void Server::Start() {
   Log(LogLevel::kInfo, "[서버] 시작 주소=", config_.bind_address, " 포트=", port_,
       " 송신큐한도=", config_.session.max_pending_send_bytes, "B",
-      " nodelay=", config_.session.tcp_nodelay ? "on" : "off", " 입출력스레드=", config_.io_threads);
+      " nodelay=", config_.session.tcp_nodelay ? "on" : "off", " 입출력스레드=", config_.io_threads,
+      " 하루=", config_.play.DayLengthTicks(), "틱", config_.play.bench_day_ticks > 0 ? "(bench)" : "");
   for (std::uint32_t i = 0; i < config_.io_threads; ++i) {
     io_threads_.emplace_back([pool = io_pool_] { pool->run(); });
   }

@@ -24,6 +24,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <deque>
 #include <cmath>
@@ -94,9 +95,19 @@ const char* ResultText(game::protocol::GameResult code) {
     case game::protocol::GAME_BUILD_OUT_OF_ZONE: return "건설 구역(맵 중앙) 밖입니다";
     case game::protocol::GAME_LOGIN_REQUIRED: return "농장에는 로그인한 사람만 들어갈 수 있습니다 (/login)";
     case game::protocol::GAME_STORAGE_UNAVAILABLE: return "농장을 불러오거나 만들지 못했습니다 (서버 저장소 오류)";
+    case game::protocol::GAME_SLEEP_TOO_FAR: return "시작 집이나 완공된 집 앞(150 cm 이내)에서만 잘 수 있습니다";
+    case game::protocol::GAME_SLEEPING: return "잠든 동안에는 할 수 없습니다 (/wake)";
     default: break;
   }
   return "알 수 없는 결과";
+}
+
+// 자정부터 센 게임 분을 "HH:MM"으로. 24시간을 넘긴 값(다음 날 새벽)도 시계 모양으로 보여 준다.
+std::string FormatGameMinute(std::uint64_t minute) {
+  char buffer[16];
+  std::snprintf(buffer, sizeof(buffer), "%02u:%02u", static_cast<unsigned>((minute / 60) % 24),
+                static_cast<unsigned>(minute % 60));
+  return buffer;
 }
 
 const char* AccountResultText(game::protocol::AccountResult code) {
@@ -170,6 +181,9 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
                 << "  /gather [번호]          노드를 한 번 친다 (번호를 생략하면 가장 가까운 살아 있는 노드)\n"
                 << "  /build <x> <y>          그 자리(100 cm 격자로 맞춰짐)에 집을 짓는다. 내 위치에서 500 cm 이내, 목재 20 + 석재 10\n"
                 << "  /structures             건물 목록(번호, 위치, 건설 중/완료)\n"
+                << "  /sleep                  잠든다 (시작 집이나 완공된 집 앞 150 cm 이내). 모두 잠들면 다음 날이 된다\n"
+                << "  /wake                   깨어난다\n"
+                << "  /clock                  날과 시각, 잠든 사람\n"
                 << "  /ping                   서버 응답 확인\n"
                 << "  /wait <밀리초>          다음 줄 처리를 늦춤 (스크립트용)\n"
                 << "  /quit                   종료\n";
@@ -249,6 +263,12 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
         std::cout << "  " << id << "번 집 @(" << s.x() << ", " << s.y() << ") "
                   << (s.state() == game::protocol::STRUCTURE_COMPLETE ? "완료" : "건설 중") << "\n";
       }
+    } else if (command == "/sleep" || command == "/wake") {
+      game::protocol::SleepRequest request;
+      request.set_sleep(command == "/sleep");
+      Send(MessageId::kSleepRequest, request);
+    } else if (command == "/clock") {
+      PrintClock();
     } else if (command == "/nodes") {
       PrintNodes();
     } else if (command == "/gather") {
@@ -370,6 +390,33 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
     std::cout << std::defaultfloat;
   }
 
+  // 마지막 스냅샷 틱으로 그날의 시각을 계산한다(서버는 시계 메시지를 따로 보내지 않는다).
+  std::uint64_t GameMinuteNow() const {
+    const std::int64_t elapsed = static_cast<std::int64_t>(last_tick_) - clock_.day_start_tick();
+    const std::uint64_t per_minute = clock_.ticks_per_game_minute() == 0 ? 1 : clock_.ticks_per_game_minute();
+    return clock_.day_start_minute() + (elapsed < 0 ? 0 : static_cast<std::uint64_t>(elapsed)) / per_minute;
+  }
+
+  std::string SleepersText() const {
+    std::string text;
+    for (const std::uint32_t id : sleeping_) {
+      if (!text.empty()) text += ", ";
+      const auto it = names_.find(id);
+      text += it != names_.end() ? it->second : std::to_string(id);
+    }
+    return text.empty() ? "없음" : text;
+  }
+
+  void PrintClock() const {
+    if (clock_.day() == 0) {
+      std::cout << "시계 정보가 없습니다 (방에 들어가야 받습니다).\n";
+      return;
+    }
+    std::cout << "[시계] " << clock_.day() << "일차 " << FormatGameMinute(GameMinuteNow()) << " (틱 " << last_tick_
+              << ", 하루 " << clock_.day_length_ticks() << "틱) / 잠든 사람 " << sleeping_.size() << '/' << names_.size()
+              << ": " << SleepersText() << (my_sleeping_ ? " / 나는 잠들어 있음" : "") << "\n";
+  }
+
   void PrintProfile(const game::protocol::AccountProfile& profile) const {
     std::cout << "[내 기록] " << profile.login_name() << ": 누적 목재 " << profile.wood_gathered() << ", 누적 석재 "
               << profile.stone_gathered() << ", 지은 집 " << profile.houses_built() << "\n";
@@ -385,6 +432,18 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
     for (const auto& structure : state.structures()) {
       structures_[structure.structure_id()] = structure;
     }
+    names_.clear();
+    for (const auto& player : state.players()) {
+      names_[player.player_id()] = player.nickname();
+    }
+    clock_ = state.clock();
+    sleeping_.assign(state.sleeping_player_ids().begin(), state.sleeping_player_ids().end());
+    my_sleeping_ = false;
+    for (const auto& landmark : state.landmarks()) {
+      std::cout << "  시작 집 @(" << landmark.x() << ", " << landmark.y() << ") " << landmark.width() << "x"
+                << landmark.height() << " cm\n";
+    }
+    PrintClock();
     std::cout << "  자원 노드 " << nodes_.size() << "개 (/nodes 로 목록), 건물 " << structures_.size() << "개 (/structures)\n";
     std::cout << "  방 코드 " << state.room_code() << " / 내 번호 " << state.your_player_id() << " / 방장 번호 "
               << state.host_player_id() << "\n  접속자:";
@@ -433,9 +492,11 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
         if (!parse(e)) break;
         switch (e.kind()) {
           case game::protocol::RoomEvent::PLAYER_JOINED:
+            names_[e.player().player_id()] = e.player().nickname();
             std::cout << "[알림] " << e.player().nickname() << " (번호 " << e.player().player_id() << ") 님이 입장했습니다\n";
             break;
           case game::protocol::RoomEvent::PLAYER_LEFT:
+            names_.erase(e.player().player_id());
             std::cout << "[알림] " << e.player().nickname() << " (번호 " << e.player().player_id() << ") 님이 나갔습니다\n";
             break;
           case game::protocol::RoomEvent::HOST_CHANGED:
@@ -450,6 +511,7 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
       case MessageId::kWorldSnapshot: {
         game::protocol::WorldSnapshot s;
         if (!parse(s)) break;
+        last_tick_ = s.tick();
         for (const auto& p : s.players()) {
           if (p.player_id() == my_player_id_) {
             my_x_ = p.x();
@@ -495,12 +557,54 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
       case MessageId::kResourceUpdate: {
         game::protocol::ResourceUpdate u;
         if (!parse(u)) break;
+        if (u.nodes_size() > 5) {  // 밤 정산은 노드를 한꺼번에 되살린다. 한 줄로 줄인다
+          for (const auto& changed : u.nodes()) {
+            auto it = nodes_.find(changed.node_id());
+            if (it != nodes_.end()) {
+              it->second.hp = changed.hp();
+              it->second.x = changed.x();
+              it->second.y = changed.y();
+            }
+          }
+          std::cout << "[노드] 틱 " << u.tick() << ": " << u.nodes_size() << "개가 바뀜 (/nodes 로 목록)\n";
+          return;
+        }
         for (const auto& changed : u.nodes()) {
           auto it = nodes_.find(changed.node_id());
-          if (it != nodes_.end()) it->second.hp = changed.hp();
+          if (it != nodes_.end()) {
+            it->second.hp = changed.hp();
+            it->second.x = changed.x();
+            it->second.y = changed.y();
+          }
           std::cout << "[노드] 틱 " << u.tick() << ": " << changed.node_id() << "번 체력 " << changed.hp()
                     << (changed.hp() == 0 ? " (고갈)" : "") << "\n";
         }
+        return;
+      }
+      case MessageId::kSleepResponse: {
+        game::protocol::SleepResponse r;
+        if (!parse(r)) break;
+        my_sleeping_ = r.sleeping();
+        std::cout << "[잠] " << ResultText(r.result()) << " / 지금 " << (r.sleeping() ? "잠들어 있음" : "깨어 있음") << "\n";
+        return;
+      }
+      case MessageId::kSleepUpdate: {
+        game::protocol::SleepUpdate u;
+        if (!parse(u)) break;
+        sleeping_.assign(u.sleeping_player_ids().begin(), u.sleeping_player_ids().end());
+        std::cout << "[잠] 틱 " << u.tick() << ": 잠든 사람 " << sleeping_.size() << '/' << names_.size() << ": "
+                  << SleepersText() << "\n";
+        return;
+      }
+      case MessageId::kDayStarted: {
+        game::protocol::DayStarted d;
+        if (!parse(d)) break;
+        clock_ = d.clock();
+        last_tick_ = d.tick();
+        my_sleeping_ = false;
+        sleeping_.clear();
+        std::cout << "[새 날] 틱 " << d.tick() << ": " << clock_.day() << "일차 " << FormatGameMinute(GameMinuteNow())
+                  << " 시작 (" << (d.forced() ? "02:00 강제 정산" : "모두 잠듦") << "). 모두 깨어나 시작 위치로 옮겨졌습니다\n";
         return;
       }
       case MessageId::kRegisterResponse: {
@@ -592,6 +696,11 @@ class GameClientApp : public std::enable_shared_from_this<GameClientApp> {
   float my_y_ = 0.0f;
   std::map<std::uint32_t, NodeInfo> nodes_;  // 방 상태와 ResourceUpdate로 유지하는 노드 목록
   std::map<std::uint32_t, game::protocol::Structure> structures_;  // 방 상태와 StructureUpdate로 유지하는 건물 목록
+  std::map<std::uint32_t, std::string> names_;  // 방 안의 사람(번호 -> 닉네임)
+  game::protocol::DayClock clock_;              // 방 상태와 DayStarted로 받은 시계(day 0이면 아직 모름)
+  std::uint64_t last_tick_ = 0;                 // 마지막 스냅샷 틱
+  std::vector<std::uint32_t> sleeping_;         // 잠든 사람(방 상태와 SleepUpdate)
+  bool my_sleeping_ = false;
 };
 
 bool ParseArgs(int argc, char** argv, Options& options, bool& help) {

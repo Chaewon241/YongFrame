@@ -52,6 +52,7 @@ void PrintUsage(const char* program) {
             << "                              부하 측정 전용: on이면 구조물/노드가 이동을 막지 않음 (기본 off)\n"
             << "  --bench-prebuilt-structures <N>\n"
             << "                              부하 측정 전용: 방마다 완공된 집을 N개(최대 20) 미리 놓음 (기본 0)\n"
+            << "  --bench-day-ticks <N>       부하 측정과 시험 전용: 하루를 N틱으로 (기본 0: 12,000틱 = 10분)\n"
             << "  --hash-workers <N>          비밀번호 해시를 계산하는 일꾼 스레드 수 (기본 2, 1~16)\n"
             << "  --storage <memory|mysql>    채팅 기록, 계정, 농장 저장소 (기본 memory: 서버를 끄면 사라짐)\n"
             << "  --db-host <주소>            MySQL 주소 (기본 127.0.0.1)\n"
@@ -160,6 +161,12 @@ ParseResult ParseArgs(int argc, char** argv, game::server::ServerConfig& config,
         return ParseResult::kExitError;
       }
       config.play.bench_prebuilt_structures = static_cast<std::uint32_t>(number);
+    } else if (arg == "--bench-day-ticks") {
+      if (!ParseUnsigned(value, 1000000000, number)) {
+        std::cerr << "--bench-day-ticks는 0~1000000000 사이 숫자(틱)여야 합니다: " << value << "\n";
+        return ParseResult::kExitError;
+      }
+      config.play.bench_day_ticks = static_cast<std::uint32_t>(number);
     } else if (arg == "--io-threads") {
       if (!ParseUnsigned(value, 64, number)) {
         std::cerr << "--io-threads는 0~64 사이 숫자여야 합니다: " << value << "\n";

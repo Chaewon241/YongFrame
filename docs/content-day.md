@@ -1,6 +1,6 @@
 # 콘텐츠 조각 2: 하루와 잠 (설계)
 
-> 상태: **서버 S0의 1~3단계(순수 로직, 프로토콜과 GameService, 시계 저장) 구현 완료, 4단계(도구) 이후와 Unreal은 남음.** 진행 상태는 13절. 아래 1~12절은 구현 전에 확정한 설계이며, 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
+> 상태: **서버 S0의 1~4단계(순수 로직, 프로토콜과 GameService, 시계 저장, 도구) 구현 완료. 5단계(변형 검증), 6단계(문서), 완료 기준 12의 측정(사용자), Unreal은 남음.** 진행 상태는 13절. 아래 1~12절은 구현 전에 확정한 설계이며, 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
 
 ## 1. 목표
 
@@ -285,9 +285,40 @@ message Landmark {
 - **혼자 하는 사람:** 혼자라면 언제든 자서 바로 다음 날로 갈 수 있다. 막지 않는다(스타듀밸리와 같다).
 - **시작 집과 옛 데이터의 겹침**(5.6).
 
-## 12. 확인 방법 (구현 뒤 채운다)
+## 12. 확인 방법
 
-터미널 체험 예시(구현 뒤 실제 출력으로 고친다): 서버를 `--bench-day-ticks 600`으로 켜고, `game_client` 두 개로 방을 만들고 들어간 뒤, `/move`로 시작 집 앞에 가서 `/sleep`을 입력한다. 한쪽만 자면 넘어가지 않고, 둘 다 자면 `DayStarted`가 출력된다. `/clock`으로 날과 시각을 본다.
+**터미널 체험(Windows, Release):**
+
+```powershell
+build/windows-local/Release/game_server.exe --port 7777 --log-level info --bench-day-ticks 600              # 터미널 1: 하루 30초
+build/windows-local/Release/game_client.exe --port 7777 --create --nick alice --snap 0                     # 터미널 2 (방 코드가 출력됨)
+build/windows-local/Release/game_client.exe --port 7777 --join <방코드> --nick bob --snap 0               # 터미널 3
+```
+
+두 창에서 `/move 0 1`을 치고 0.5초쯤 뒤 `/stop`(시작 칸 0, 1은 시작 집에서 300 cm라서 북쪽으로 걸어가야 한다. 칸 2, 3은 바로 잘 수 있다), 그다음 `/sleep`. 실제 출력(요약):
+
+```
+[잠] 시작 집이나 완공된 집 앞(150 cm 이내)에서만 잘 수 있습니다 / 지금 깨어 있음     <- 걷기 전에 잤을 때
+[잠] 성공 / 지금 잠들어 있음
+[잠] 틱 44: 잠든 사람 1/2: alice                                                    <- 한쪽만 자면 넘어가지 않는다
+[시계] 1일차 06:05 (틱 53, 하루 600틱) / 잠든 사람 1/2: alice / 나는 잠들어 있음
+[채집] 노드 1: 잠든 동안에는 할 수 없습니다 (/wake) / 내 목재 0 석재 0
+[새 날] 틱 64: 2일차 06:00 시작 (모두 잠듦). 모두 깨어나 시작 위치로 옮겨졌습니다     <- 둘 다 잔 다음 틱
+[잠] 틱 64: 잠든 사람 0/2: 없음
+[시계] 2일차 06:01 (틱 75, 하루 600틱) / 잠든 사람 0/2: 없음
+```
+
+아무도 자지 않으면 하루(600틱 = 30초)가 끝날 때 `[새 날] … (02:00 강제 정산)`이 나온다. 방에 들어갈 때 `시작 집 @(2500, 2850) 400x300 cm`와 `[시계]`가 함께 출력된다.
+
+**부하 생성기가 밤 정산을 견디는지(짧은 확인):** 서버를 `--bench-day-ticks 100`으로 켜고 `game_load_client --rooms 20 --warmup 2 --duration 10`을 돌리면 결과에 `밤 정산 : 40번(방마다 셈), DayStarted 수신 160건(연결마다 셈)`이 나오고 정합성 위반 0, 합격이었다. `DayStarted` 다음 스냅샷의 거리 검사 건너뛰기를 빼고 같은 실행을 하면 위반 636건으로 불합격이었다(그 처리가 필요하다는 확인).
+
+**밤 정산 비용 측정(완료 기준 12, 사용자가 실행):** Release로 빌드한 뒤 저장소 폴더에서
+
+```powershell
+powershell -ExecutionPolicy Bypass -File results\stage4\run-night-cost.ps1
+```
+
+조건 A(기본 하루)와 B(`--bench-day-ticks 200`)를 방 400개, `--io-threads 0`으로 번갈아 3회씩 돌린다(매 실행 새 서버, 실행 전 PC CPU 기록, 바쁘면 기다렸다가 그래도 바쁘면 `CONTAMINATED` 표시). 원본은 `results/stage4/raw/`(`game-night-*.txt`, `game-server-night-*.log.gz`, `game-load-night.csv`, `game-load-night-progress.txt`, `game-load-night-environment.txt`)에 남는다. 함께 기록할 값: 서버 통계 줄 끝의 `하루{정산= 강제= 정산시간=…us 최대정산=…us}`(측정 구간 시각으로 잘라 증가분을 본다)와 클라이언트 출력의 `밤 정산` 줄. 방 하나의 정산 평균 시간 = 정산시간 증가분 / 정산 증가분. 결과는 `results/stage4/night-cost.md`에 쓴다.
 
 ## 13. 구현 결과
 
@@ -298,12 +329,12 @@ message Landmark {
 | S0-1 | `PlayConfig` 값, `Room`/`ResourceField`/`StructureSet`/`World`의 순수 로직(시계, 잠, 정산 판정, `RunNight`, 시작 집 장애물), 단위 시험 | 완료(Windows) |
 | S0-2 | proto(116~119, `DayClock`, `Landmark`, `RoomState` 7~9, 결과 코드 21~22), `GameService`(`HandleSleep`, 틱 순서, 알림 순서, 통계), `Session` 연결, 통합 시험 | 완료(Windows) |
 | S0-3 | 시계 저장(마이그레이션 004, `StoredClock`, 저장소, `FarmPersistence` 저장 시점, 복원 규칙) | 완료(Windows, 인메모리 저장소로 시험. 실제 MySQL 시험은 사용자가 실행) |
-| S0-4 | `game_client`(`/sleep`, `/wake`, `/clock`), `game_load_client`(새 메시지 견디기), 서버 `--bench-day-ticks` | 남음 |
+| S0-4 | `game_client`(`/sleep`, `/wake`, `/clock`), `game_load_client`(새 메시지 견디기), 서버 `--bench-day-ticks` | 완료(Windows, 실제 실행으로 확인, 12절). 측정 스크립트 `results/stage4/run-night-cost.ps1`까지 준비, 측정은 사용자 |
 | S0-5 | 완료 기준 14의 변형 검증 | 남음(8가지만 미리 확인, 아래) |
 | S0-6 | 문서(stage4.md 프로토콜 표, persistence.md 스키마, unreal-client.md 기준 바이트, CLAUDE.md 명령과 코드 구조) | 남음(이 절, CLAUDE.md 현재 상태와 계정 MySQL 시험 명령만 갱신) |
 | S1~S3 | Unreal | 남음 |
 
-**S0-4 전까지의 한계:** 서버 옵션 `--bench-day-ticks`가 아직 없다(`PlayConfig::bench_day_ticks`는 시험에서만 쓴다). 현재 Unreal 클라이언트와 `game_load_client`는 117~119를 모르므로, 10분(기본 하루)이 넘게 접속해 있으면 `DayStarted`를 받는다. 운영 DB에는 `db_migrate`로 004를 적용해야 `--storage mysql` 서버가 농장 저장소 문장을 준비할 수 있다(없으면 농장 열기가 `GAME_STORAGE_UNAVAILABLE`).
+**Unreal S1 전까지의 한계:** 현재 Unreal 클라이언트는 117~119를 모르므로, 10분(기본 하루)이 넘게 접속해 있으면 `DayStarted`를 받는다(어떻게 처리하는지는 S1에서 확인한다). 운영 DB에는 `db_migrate`로 004를 적용해야 `--storage mysql` 서버가 농장 저장소 문장을 준비할 수 있다(없으면 농장 열기가 `GAME_STORAGE_UNAVAILABLE`).
 
 ### 구현 중 정한 세부 사항
 
@@ -325,6 +356,13 @@ message Landmark {
 - **실패한 시계:** 대기열로 되돌린다. 그사이 더 새 시계가 들어왔으면 새 값이 이긴다(다른 값과 같은 규칙).
 - **복원:** `FinishOpenFarm`이 새로 여는 농장에만 `Room::RestoreClock`을 부른다(이미 열려 있는 농장에 들어가는 경우는 방의 시계 그대로). 저장된 경과가 하루 길이 이상이면 경고 로그를 남긴다(같으면 자르지 않아도 다음 틱에 강제 정산된다).
 - **열린 농장 찾기:** 시계 출처가 farm_id로 방을 찾도록 `GameService::open_farm_codes_`(farm_id → 방 코드)를 둔다. 농장이 닫힐 때 지운다.
+
+### 도구에서 정한 세부 사항 (S0-4)
+
+- **서버 `--bench-day-ticks N`:** 0~1,000,000,000(0이면 기본 하루). 시작 로그에 `하루=N틱(bench)`를 남겨 측정 기록에 설정이 남게 했다.
+- **`game_client`:** `/sleep`, `/wake`, `/clock`. 시각은 마지막 스냅샷 틱과 방 상태/`DayStarted`의 `DayClock`으로 계산해 `HH:MM`(24시간을 넘긴 새벽은 시계 모양 01:59 등)으로 보인다. 방 상태를 받으면 시작 집과 시계를 출력한다. `SleepUpdate`는 "잠든 사람 n/전체: 닉네임"으로, `DayStarted`는 날과 강제 여부로 출력한다. 밤 정산처럼 노드가 6개 이상 한꺼번에 바뀐 `ResourceUpdate`는 한 줄로 줄인다(노드 위치도 갱신해 `/nodes`의 거리가 맞게 했다).
+- **`game_load_client`:** 원래 모르는 메시지를 읽고 버리고 있었다. `DayStarted`를 받으면 그 연결의 다음 스냅샷 한 번은 틱당 이동 거리 검사를 건너뛴다(위치는 기억해 둔다). 측정 구간에 받은 수를 `밤 정산 : N번(방마다 셈), DayStarted 수신 M건(연결마다 셈)`으로 출력한다. **CSV에는 열을 더하지 않았다**: 기존 CSV 파일에 줄을 덧붙이는 방식이라 열이 바뀌면 이전 결과와 한 파일에 섞일 때 깨지기 때문이다. 측정 기록은 출력(`game-*.txt`)에서 읽는다.
+- **측정 스크립트:** `results/stage4/run-night-cost.ps1`(입출력 분리 측정의 `run-load-io.ps1`과 같은 규칙, ASCII만).
 
 ### 고친 기존 시험과 이유
 

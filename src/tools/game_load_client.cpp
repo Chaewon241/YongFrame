@@ -15,6 +15,8 @@
 //  - 누락 스냅샷: 스냅샷의 틱 번호가 건너뛴 만큼
 //  - 정합성: 인원, 위치(유한, 맵 안), 틱당 이동 거리 상한(서버 속도), 틱 증가
 //  - 반영되지 않은 입력, 끊긴 연결, 서버 CPU/메모리, 받은 스냅샷 대역폭
+//  - 밤 정산(DayStarted) 수신 수(docs/content-day.md 완료 기준 12). DayStarted 다음 스냅샷은 아침 위치로 순간이동하므로
+//    그 한 번은 틱당 이동 거리 검사를 건너뛴다. 다른 새 메시지(SleepUpdate 등)는 읽고 버린다.
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -239,6 +241,8 @@ struct WorkerCtx {
   std::uint64_t inputs_sent = 0, inputs_reflected = 0;
   std::uint64_t snapshots = 0, snapshots_missing = 0;
   std::uint64_t violations = 0, roster_mismatches = 0, disconnects = 0, bytes_received = 0;
+  std::uint64_t day_started_received = 0;  // 측정 구간에 받은 DayStarted(연결마다 센다)
+  std::uint64_t nights = 0;                // 측정 구간의 밤 정산 수(방마다 한 번: 방장 연결만 센다)
   std::vector<std::uint32_t> gap_us;      // 스냅샷 도착 간격
   std::vector<std::uint32_t> input_us;    // 입력 반영 지연
   std::vector<std::uint32_t> lag_us;      // 입력 예정 시각 대비 실제 전송 지연
@@ -385,8 +389,16 @@ class GClient : public std::enable_shared_from_this<GClient> {
       case MessageId::kWorldSnapshot:
         OnSnapshot(frame, arrival);
         return;
+      case MessageId::kDayStarted:
+        // 밤 정산: 모두 아침 위치로 옮겨진다. 바로 다음 스냅샷(같은 틱)의 이동 거리 검사를 한 번 건너뛴다.
+        skip_distance_check_ = true;
+        if (ctx_.measuring) {
+          ++ctx_.day_started_received;
+          if (index_ == 0) ++ctx_.nights;
+        }
+        return;
       default:
-        return;  // 방 알림 등은 이 시험에서 쓰지 않는다
+        return;  // 방 알림, 잠든 사람 목록 등은 이 시험에서 쓰지 않는다
     }
   }
 
@@ -421,6 +433,8 @@ class GClient : public std::enable_shared_from_this<GClient> {
     const float max_y = ctx_.play.map_height_cm - ctx_.play.player_radius_cm;
     const float per_tick = ctx_.play.move_speed_cm_per_s * ctx_.play.TickSeconds();
     const proto::PlayerState* own = nullptr;
+    const bool check_distance = !skip_distance_check_;
+    skip_distance_check_ = false;
     for (const auto& player : snapshot.players()) {
       if (!std::isfinite(player.x()) || !std::isfinite(player.y()) || player.x() < min_edge - 0.01f ||
           player.x() > max_x + 0.01f || player.y() < min_edge - 0.01f || player.y() > max_y + 0.01f) {
@@ -428,7 +442,7 @@ class GClient : public std::enable_shared_from_this<GClient> {
       }
       if (player.player_id() == player_id_) own = &player;
       const auto previous = last_positions_.find(player.player_id());
-      if (previous != last_positions_.end() && delta_ticks > 0) {
+      if (check_distance && previous != last_positions_.end() && delta_ticks > 0) {
         const float dx = player.x() - previous->second.first;
         const float dy = player.y() - previous->second.second;
         const float limit = per_tick * static_cast<float>(delta_ticks) + 0.05f;
@@ -538,6 +552,7 @@ class GClient : public std::enable_shared_from_this<GClient> {
   Clock::time_point last_arrival_{};
   bool has_arrival_ = false;
   std::unordered_map<std::uint32_t, std::pair<float, float>> last_positions_;
+  bool skip_distance_check_ = false;  // DayStarted를 받았다: 다음 스냅샷은 순간이동이라 거리 검사를 건너뛴다
 };
 
 // ============================================================ 작업 스레드
@@ -546,6 +561,7 @@ struct WorkerResult {
   std::uint64_t rooms_ok = 0, rooms_failed = 0, inputs_sent = 0, inputs_reflected = 0, inputs_unapplied = 0;
   std::uint64_t snapshots = 0, snapshots_missing = 0, violations = 0, roster_mismatches = 0, disconnects = 0;
   std::uint64_t bytes_received = 0;
+  std::uint64_t day_started_received = 0, nights = 0;
   std::vector<std::uint32_t> gap_us, input_us, lag_us;
 };
 
@@ -609,6 +625,8 @@ class Worker {
       r.roster_mismatches = ctx_.roster_mismatches;
       r.disconnects = ctx_.disconnects;
       r.bytes_received = ctx_.bytes_received;
+      r.day_started_received = ctx_.day_started_received;
+      r.nights = ctx_.nights;
       r.gap_us = std::move(ctx_.gap_us);
       r.input_us = std::move(ctx_.input_us);
       r.lag_us = std::move(ctx_.lag_us);
@@ -813,6 +831,8 @@ class Runner {
       total.roster_mismatches += r.roster_mismatches;
       total.disconnects += r.disconnects;
       total.bytes_received += r.bytes_received;
+      total.day_started_received += r.day_started_received;
+      total.nights += r.nights;
       total.gap_us.insert(total.gap_us.end(), r.gap_us.begin(), r.gap_us.end());
       total.input_us.insert(total.input_us.end(), r.input_us.begin(), r.input_us.end());
       total.lag_us.insert(total.lag_us.end(), r.lag_us.begin(), r.lag_us.end());
@@ -880,6 +900,7 @@ class Runner {
               << "스냅샷        : 수신 " << r.snapshots << ", 누락 " << r.snapshots_missing << " (" << missing_rate * 100 << "%), 수신 대역폭 "
               << std::setprecision(1) << kbps << " KiB/s\n"
               << "정합성        : 위반 " << r.violations << ", 인원 불일치 " << r.roster_mismatches << ", 끊긴 연결 " << r.disconnects << "\n"
+              << "밤 정산       : " << r.nights << "번(방마다 셈), DayStarted 수신 " << r.day_started_received << "건(연결마다 셈)\n"
               << std::setprecision(2)
               << "도착 간격(ms) : p50 " << gap_p50 << "  p95 " << gap_p95 << "  p99 " << gap_p99 << "  최대 " << gap_max << "\n"
               << "입력 반영(ms) : p50 " << in_p50 << "  p95 " << in_p95 << "  p99 " << in_p99 << "  최대 " << in_max << "\n"
