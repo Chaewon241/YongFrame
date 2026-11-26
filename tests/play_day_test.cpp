@@ -451,6 +451,35 @@ TEST(NightTest, TheSameStateAlwaysGivesTheSameNight) {
   EXPECT_EQ(a.day_start_tick(), b.day_start_tick());
 }
 
+TEST(NightTest, NodesRespawnAroundTheMorningSpotsSoNobodyIsPushedAsideAtDawn) {
+  // 5.4절의 순서(3 깨우기와 아침 위치 -> 4 재생)를 시험한다. 기본값에서는 노드가 건설 구역 밖에만 생겨 순서가 결과를
+  // 바꾸지 않으므로, 구역이 없는 작은 맵(노드 자리 [200, 800])을 쓴다. 사람은 밤마다 시작 칸에서 먼 구석에 있다.
+  // 재생이 먼저라면 노드가 밤 위치만 피해서 아침 자리(400, 400)에 나타날 수 있고, 그러면 사람이 빈 자리로 밀려난다.
+  PlayConfig config;
+  config.map_width_cm = 1000.0f;
+  config.map_height_cm = 1000.0f;
+  config.tree_count = 1;
+  config.rock_count = 0;
+  config.tree_hp = 1;
+  config.spawn_clear_radius_cm = 0.0f;
+  config.build_zone_half_size_cm = 0.0f;
+  config.farmhouse_width_cm = 0.0f;
+  Room room("111111", config);
+  ASSERT_EQ(room.resources().nodes().size(), 1u);
+  std::uint32_t seq = 0;
+  for (int round = 0; round < 200; ++round) {
+    room.resources().Hit(1);  // 고갈: 걸어가는 길을 막지 않는다
+    if (round == 0) Fill(room, 1);
+    ASSERT_EQ(room.ApplyInput(1, ++seq, 1.0f, 1.0f), InputResult::kApplied);
+    Steps(room, 40);  // 구석(약 (900, 900))으로 간다
+    room.RunNight(room.world().tick(), false);
+    const PlayerBody* body = room.world().Find(PlayerOf(room, 1));
+    ASSERT_EQ(body->x, 400.0f) << "라운드 " << round << ": 아침에는 자기 칸의 시작 위치에 선다";
+    ASSERT_EQ(body->y, 400.0f) << "라운드 " << round;
+    ASSERT_EQ(room.resources().Find(1)->hp, 1u) << "라운드 " << round << ": 노드는 돌아온다";
+  }
+}
+
 TEST(NightTest, ANodeWithNoFreeSpotAtNightIsRetriedEveryTwentyTicksDuringTheDay) {
   // 작은 맵(600 x 600, 노드 자리 [200, 400])에 몸이 큰 사람 하나가 가운데 서면 모든 자리를 막는다.
   PlayConfig config;

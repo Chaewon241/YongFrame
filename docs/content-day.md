@@ -1,6 +1,6 @@
 # 콘텐츠 조각 2: 하루와 잠 (설계)
 
-> 상태: **서버 S0의 1~4단계(순수 로직, 프로토콜과 GameService, 시계 저장, 도구) 구현 완료. 5단계(변형 검증), 6단계(문서), 완료 기준 12의 측정(사용자), Unreal은 남음.** 진행 상태는 13절. 아래 1~12절은 구현 전에 확정한 설계이며, 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
+> 상태: **서버 S0의 1~5단계(순수 로직, 프로토콜과 GameService, 시계 저장, 도구, 변형 검증) 완료. 6단계(문서), 완료 기준 12의 측정(사용자), Unreal은 남음.** 진행 상태는 13절. 아래 1~12절은 구현 전에 확정한 설계이며, 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
 
 ## 1. 목표
 
@@ -330,7 +330,7 @@ powershell -ExecutionPolicy Bypass -File results\stage4\run-night-cost.ps1
 | S0-2 | proto(116~119, `DayClock`, `Landmark`, `RoomState` 7~9, 결과 코드 21~22), `GameService`(`HandleSleep`, 틱 순서, 알림 순서, 통계), `Session` 연결, 통합 시험 | 완료(Windows) |
 | S0-3 | 시계 저장(마이그레이션 004, `StoredClock`, 저장소, `FarmPersistence` 저장 시점, 복원 규칙) | 완료(Windows, 인메모리 저장소로 시험. 실제 MySQL 시험은 사용자가 실행) |
 | S0-4 | `game_client`(`/sleep`, `/wake`, `/clock`), `game_load_client`(새 메시지 견디기), 서버 `--bench-day-ticks` | 완료(Windows, 실제 실행으로 확인, 12절). 측정 스크립트 `results/stage4/run-night-cost.ps1`까지 준비, 측정은 사용자 |
-| S0-5 | 완료 기준 14의 변형 검증 | 남음(8가지만 미리 확인, 아래) |
+| S0-5 | 완료 기준 14의 변형 검증 | 완료(37가지: 35가지 잡음, 1가지 시험 보강 뒤 잡음, 1가지 동등 변형. 아래 "변형 검증 결과") |
 | S0-6 | 문서(stage4.md 프로토콜 표, persistence.md 스키마, unreal-client.md 기준 바이트, CLAUDE.md 명령과 코드 구조) | 남음(이 절, CLAUDE.md 현재 상태와 계정 MySQL 시험 명령만 갱신) |
 | S1~S3 | Unreal | 남음 |
 
@@ -392,6 +392,53 @@ powershell -ExecutionPolicy Bypass -File results\stage4\run-night-cost.ps1
 
 시험 설정 `FarmConfig`/`BuildServerConfig`/`GatherServerConfig`의 인자는 `bench_day_ticks`로 바뀌었고 기본값 0(시험 중에 밤이 오지 않음)이다. 밤이 오면 농장이 바로 저장되므로, 주기 저장을 확인하는 시험에 밤이 섞이지 않게 했다.
 
+### 변형 검증 결과 (S0-5)
+
+변형을 하나씩 심고 → Debug로 빌드 → 단위/통합 시험 11개(`play_day_test`, `play_resources_test`, `play_structures_test`, `play_collision_test`, `play_room_test`, `play_world_test`, `game_service_test`, `farm_persistence_test`, `farm_service_test`, `game_integration_test`, `farm_integration_test`)를 모두 돌리고 → 되돌렸다. 완료 기준 14의 목록 23가지(경계 둘, 옛 재생 둘로 나눠 25개)와, 빠진 곳을 보려고 더한 12가지다. 아래 "잡은 시험"은 실패한 시험의 일부다.
+
+| 번호 | 변형 | 결과 | 잡은 시험(일부) |
+| --- | --- | --- | --- |
+| M01 | 잠 거리 경계(`<=`를 `<`로, 설계의 `>`를 `>=`로와 같음) | 잡음 | `SleepTest.TheFarmhouseRangeIncludesTheBoundary` 외 |
+| M02 | 건설 중인 집 앞에서도 잘 수 있게 | 잡음 | `SleepTest.ACompletedHouseCanBeSleptAtButAHouseUnderConstructionCannot` |
+| M03 | "모두 잠듦"을 "누구든 잠듦"으로 | 잡음 | `NightTriggerTest.*` 2, `DayServiceTest` 6, TCP 2 |
+| M04a | 강제 정산 경계 하나 늦게 | 잡음 | `DayClockTest.WithSomeoneAwake…`, `TheDefaultDayIsForcedAtExactly12000…` 외 |
+| M04b | 강제 정산 경계 하나 이르게 | 잡음 | 같음, 실제 타이머 TCP 1 |
+| M05 | 정산에서 완공 빠뜨림 | 잡음 | `NightTest`, 건설 서비스/통합/농장 통합 |
+| M06 | 정산에서 재생 빠뜨림 | 잡음 | `NightTest`, 채집 서비스/통합 |
+| M07 | 아침 위치로 안 옮김 | 잡음 | `NightTest.TheNightCompletes…`, `TheDefaultDayIsForced…` |
+| M08 | 잠을 안 깨움 | 잡음 | `NightTest`, 서비스, 농장, TCP |
+| M09 | `day` 안 늘림 | 잡음 | `NightTest`, 서비스, 농장 |
+| M10 | `day_start_tick` 안 바꿈 | 잡음 | `NightTest`, 따라잡기 틱 시험 |
+| M11 | 잠든 사람의 이동 입력 반영 | 잡음 | `SleepTest.MoveInputsWhileAsleep…`, `DayServiceTest.MoveInputsFromASleeper…`, TCP |
+| M12 | 잠든 채 채집 허용 | 잡음 | `RoomGatherTest.ASleepingPlayerCannotGather…`, 서비스, TCP |
+| M13 | 잠든 채 건설 허용 | 잡음 | `RoomBuildTest.ASleepingPlayerCannotBuild…`, 서비스, TCP |
+| M14 | 시작 집을 장애물에서 뺌 | 잡음 | `CollisionTest.NobodyCanWalkIntoTheFarmhouse…` 외 3 |
+| M15 | 시작 집 겹침 검사 뺌 | 잡음 | `RoomBuildTest.NothingCanBeBuiltOverlappingTheFarmhouse…` 외 |
+| M16a | 옛 600틱 재생을 남김(600틱마다 고갈 노드 재생) | 잡음 | `GatherServiceTest.ADepletedNodeStaysDepletedUntilTheNight…` |
+| M16b | 옛 재생을 남김(고갈 노드를 낮의 재시도가 되살림) | 잡음 | `ResourceFieldTest.ADepletedNodeStaysDepletedThroughTheDay…` 외 |
+| M17 | 옛 100틱 완공을 남김 | 잡음 | `BuildServiceTest.BuildingRepliesAtOnce…ThenOnCompletion` |
+| M18 | `DayStarted`를 스냅샷 뒤에 보냄 | 잡음 | `DayServiceTest.WhenEveryoneSleeps…DayStartedSentFirst`, TCP |
+| M19 | `SleepUpdate`를 매 틱 보냄 | 잡음 | `SleepTest.TheSleepChangeIsReported…`, `DayServiceTest.SleepUpdateGoesToEveryone…` |
+| M20 | 늦은 입장자의 `RoomState`에서 시계 뺌 | 잡음 | `DayServiceTest.ALateJoinerReceivesTheClock…`, 농장 서비스/통합 |
+| M21 | 닫을 때 시계 저장 뺌 | **살아남음(동등 변형)** | 아래 |
+| M22 | 복원 때 경과 무시 | 잡음 | `FarmClock.ClosingSavesTheClock…`, 농장 통합 |
+| M23 | 정산 저장을 주기 저장으로 미룸 | 잡음 | `FarmClock.TheNightSavesTheNewDayAtOnce…`, 농장 통합 |
+| X01 | 재생을 깨우기 전에(5.4절 순서 3과 4를 바꿈) | **처음엔 살아남음 → 시험 보강 뒤 잡음** | 새 시험 `NightTest.NodesRespawnAroundTheMorningSpotsSoNobodyIsPushedAsideAtDawn` |
+| X02 | `DayStarted.forced`를 늘 false로 | 잡음 | `TheDefaultDayIsForced…`, 농장, 실제 타이머 TCP |
+| X03 | `RoomState`에서 잠든 사람 뺌 | 잡음 | `DayServiceTest.ALateJoiner…` |
+| X04 | `RoomState`에서 시작 집 뺌 | 잡음 | 같음, TCP |
+| X05 | 복원 경과를 하루 길이로 자르지 않음 | 잡음 | `DayClockTest.AnElapsedLongerThanTheDay…`, `FarmClock.AStoredElapsedLonger…` |
+| X06 | 잠들 때 멈추지 않음 | 잡음 | `SleepTest.FallingAsleepStopsTheBody…` |
+| X07 | `Session`이 `SleepRequest`를 게임으로 넘기지 않음 | 잡음 | TCP 4 |
+| X08 | 클라이언트가 보낸 `DayStarted`(119)를 요청으로 받음 | 잡음 | `GameServerOnlyIdTest`(119) |
+| X09 | 열린 농장의 지금 시계를 싣지 않음(시계 출처 제거) | 잡음 | `FarmClock.ThePeriodicSaveDoesNotWrite…`, `AFailedNightSave…` |
+| X10 | 실패한 시계를 대기열로 되돌리지 않음 | 잡음 | `FarmPersistence.AFailedSaveKeepsTheClock…`, `FarmClock.AFailedNightSave…` |
+| X11 | 노드 재생 자리가 시작 집을 피하지 않음 | 잡음 | `CollisionTest.RespawnedNodesNeverLandOnTheFarmhouse` |
+| X12 | 잠든 사람이 나가 목록이 줄어도 알리지 않음 | 잡음 | `SleepTest.TheSleepChangeIsReported…`, TCP |
+
+- **M21이 동등 변형인 근거:** 농장이 닫히는 것은 마지막 사람이 나갈 때뿐이고, 그때 `PersistLeaver`는 항상 그 사람의 인벤토리를 대기열에 넣고 바로 저장한다. 그 저장 묶음을 만들 때 방이 아직 지워지지 않았으므로(방은 `PersistLeaver` 뒤에 지운다) 시계 출처가 방의 지금 시계, 즉 닫힌 시각을 싣는다. 그래서 명시적인 `UpdateClock`을 빼도 저장되는 값이 같다. 두 장치가 겹쳐 있는 것이고, 시계 출처를 빼는 변형(X09)은 잡혔다. 명시적인 `UpdateClock`은 "닫힌 시각을 저장한다"는 규칙을 시계 출처의 호출 순서에 기대지 않게 하려고 남겨 둔다.
+- **X01에서 보강한 시험:** 기본값에서는 노드가 건설 구역 밖에만 생기고 사람은 아침에 맵 중앙에 서므로 순서가 결과를 바꾸지 않는다(5.4절에도 적었다). 구역이 없는 작은 맵(1,000 x 1,000, 노드 자리 [200, 800])에서 사람이 밤마다 구석에 있게 하고 200번 정산해, 매번 아침에 자기 칸 (400, 400)에 정확히 서는지 본다. 재생이 먼저면 노드가 아침 자리에 나타나 사람이 빈 자리로 밀려난다.
+
 ### 검증 결과 (S0-3)
 
 - `ctest` 전체(Debug): **S0-2 뒤 665개 → 684개(통과 647, MySQL 37 건너뜀, 실패 0)**, 두 번 실행해 같았다. 새로 더한 것:
@@ -399,9 +446,9 @@ powershell -ExecutionPolicy Bypass -File results\stage4\run-night-cost.ps1
   - `farm_service_test` 8개(시계를 직접 돌리는 결정적 시험): 밤 정산 저장이 주기 저장 없이 바로 됨, **경과 5,000에 닫고(그동안 서버의 다른 방은 3,000틱 흐름) 다시 열면 6,999틱에는 아직이고 7,000틱에 강제 정산**, 시계 행 없는 옛 농장은 1일차 경과 0, 하루 길이보다 긴 경과는 다음 틱에 강제 정산, 저장된 건설 중인 집은 남은 틱과 상관없이 다음 밤에 완공되어 저장, 밤 정산 저장 실패에도 게임이 계속되고 다음 주기에 저장, 시계만 흐른 농장은 주기 저장하지 않음, 서버 종료가 시계를 저장, 게스트 방은 저장하지 않음.
   - `farm_integration_test` 2개(실제 TCP와 타이머, 각각 `_io4` 포함): 밤 정산의 새 날 저장, 닫힌 시각에서 이어서 열림.
   - `account_mysql_test` 2개(**사용자가 실행**): 시계 왕복과 멱등, 시계를 싣지 않은 저장은 시계를 건드리지 않음 / 서버를 껐다 켜도 날과 시각(경과)이 복원됨. 기존 2개에 시계 확인을 더했다.
-- 미리 확인한 저장 관련 변형 5가지: "닫을 때 시계 저장 뺌"은 **살아남았고 동등 변형이다**. 농장이 닫힐 때는 나가는 사람의 인벤토리 때문에 어차피 저장이 일어나고, 그 순간 방이 아직 있어 시계 출처가 지금 시계(= 닫힌 시각)를 싣는다. 두 장치가 겹쳐 있어서 하나를 빼도 결과가 같다(시계 출처를 빼는 변형은 잡혔다). "복원 때 경과 무시", "정산 저장을 주기 저장으로 미룸", "시계 출처 제거", "실패한 시계를 되돌리지 않음"은 모두 시험이 잡았다.
+- 저장 관련 변형은 위 "변형 검증 결과"에 합쳤다(M21~M23, X05, X09, X10).
 
 ### 검증 결과 (S0-1, S0-2)
 
 - `ctest` 전체(Debug): **이전 593개(통과 558, MySQL 35 건너뜀) → 이후 665개(통과 630, 건너뜀 35, 실패 0)**, 두 번 실행해 같았다. 새로 더한 것: `play_day_test` 28개(시계, 잠, 정산 조건, 정산 내용과 결정성, 재시도, 옛 데이터의 겹친 집), 시작 집 시험(충돌 5, 건설 4), `GameService`의 하루/잠 시험 15개, TCP 통합 4개(각각 `_io4` 반복 포함), 서버 전용 ID 117~119와 잘못된 `SleepRequest` 본문의 연결 종료.
-- 미리 확인한 변형 3가지(완료 기준 14의 일부, 정식 변형 검증은 S0-5): `DayStarted`를 스냅샷 뒤에 보냄, `SleepUpdate`를 매 틱 보냄, "모두 잠듦"을 "누구든 잠듦"으로. 모두 시험이 잡았다.
+- 변형 검증은 위 "변형 검증 결과"(S0-5)에 있다. S0-5에서 시험 1개(`NodesRespawnAroundTheMorningSpots…`)를 더해 `ctest`는 685개(통과 648, MySQL 37 건너뜀, 실패 0)가 되었다.
