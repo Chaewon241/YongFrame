@@ -29,6 +29,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/stage4-gather.md](docs/stage4-gather.md) | 4단계 확장 1(자원 채집) 설계: 범위, 프로토콜(ID 107/108/112), 기본값, 완료 기준, 서버·Unreal 설계, MCP 작업 목록 (구현 전) |
 | [docs/content-roadmap.md](docs/content-roadmap.md) | 채집 이후 콘텐츠 로드맵(집 짓기 → 하루 → 농사 → 경제 → 저장)과 첫 조각(집 짓기, 이동 충돌 포함) 설계. 구현 전 계획 |
 | [docs/content-day.md](docs/content-day.md) | 콘텐츠 조각 2(하루와 잠) 설계: 시계, 잠, 밤 정산 순서, 시작 집, 프로토콜(ID 116~119, 결과 코드 21~22), 시계 저장(마이그레이션 004), 완료 기준과 밤 정산 비용 측정 계획. 서버 S0 1·2단계 구현됨(13절) |
+| [docs/content-maps.md](docs/content-maps.md) | 콘텐츠 조각 2.5(맵 여러 개) 설계: 농장/숲/채석장, 출입구와 맵 이동, 방 틱 하나, 맵별 알림, 프로토콜(ID 126, 새 필드, 기존 결과 코드의 뜻 확장), 완료 기준과 부하 측정 계획. 구현 전(조각 2 다음) |
 | [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(5.4.4와 5.8.4에서 Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법, 겪은 문제, 확인 방법 |
 | [docs/persistence.md](docs/persistence.md) | 계정(ID/비밀번호)과 농장 저장(MySQL) 설계: 결정, 기본값, 스키마, 저장 규칙, 프로토콜(ID 120~), 검증과 성능 측정 계획, 작업 순서. 구현 전 |
 | [docs/server-journey.md](docs/server-journey.md) | 서버 시행착오 기록(포트폴리오용): 측정 도구 포화, 결론 철회 두 번, 병목 분해, 입출력 스레드 분리, 버그와 시험의 허점 |
