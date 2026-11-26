@@ -1,6 +1,6 @@
 # 콘텐츠 조각 2: 하루와 잠 (설계)
 
-> 상태: **구현 전 설계.** 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
+> 상태: **서버 S0의 1·2단계(순수 로직, 프로토콜과 GameService) 구현 완료, 3단계(시계 저장) 이후와 Unreal은 남음.** 진행 상태는 13절. 아래 1~12절은 구현 전에 확정한 설계이며, 범위, 기본값, 프로토콜, 완료 기준을 구현 전에 확정한 문서다. 구현 세션은 이 문서와 CLAUDE.md만 읽고 시작할 수 있게 썼다. 기획 배경은 [game-plan.md](game-plan.md), 조각 순서는 [content-roadmap.md](content-roadmap.md)에 있다. "사용자 결정"으로 표시하지 않은 값은 **임의 기본값**이고 `PlayConfig` 한 곳에서 바꾼다. 측정 합격 기준(완료 기준 12)은 측정 전에 쓴 것이라 결과를 본 뒤 바꾸지 않는다. 구현하면서 정한 세부 사항과 검증 결과는 이 문서 맨 아래에 이어서 적는다.
 
 ## 1. 목표
 
@@ -291,4 +291,60 @@ message Landmark {
 
 ## 13. 구현 결과
 
-(구현 세션이 채운다: 구현 중 정한 세부 사항, 고친 기존 시험 목록과 이유, 검증 결과, 변형 검증 결과, 측정 결과 요약, 알려진 한계.)
+### 진행 상태
+
+| 단계 | 내용 | 상태 |
+| --- | --- | --- |
+| S0-1 | `PlayConfig` 값, `Room`/`ResourceField`/`StructureSet`/`World`의 순수 로직(시계, 잠, 정산 판정, `RunNight`, 시작 집 장애물), 단위 시험 | 완료(Windows) |
+| S0-2 | proto(116~119, `DayClock`, `Landmark`, `RoomState` 7~9, 결과 코드 21~22), `GameService`(`HandleSleep`, 틱 순서, 알림 순서, 통계), `Session` 연결, 통합 시험 | 완료(Windows) |
+| S0-3 | 시계 저장(마이그레이션 004, `StoredClock`, 저장소, `FarmPersistence` 저장 시점, 복원 규칙) | 남음 |
+| S0-4 | `game_client`(`/sleep`, `/wake`, `/clock`), `game_load_client`(새 메시지 견디기), 서버 `--bench-day-ticks` | 남음 |
+| S0-5 | 완료 기준 14의 변형 검증 | 남음(핵심 3가지만 미리 확인, 아래) |
+| S0-6 | 문서(stage4.md 프로토콜 표, persistence.md 스키마, unreal-client.md 기준 바이트, CLAUDE.md 명령과 코드 구조) | 남음(이 절과 CLAUDE.md 현재 상태만 갱신) |
+| S1~S3 | Unreal | 남음 |
+
+**S0-3 전까지의 한계:** 농장을 닫았다 열면 시계가 1일차 경과 0으로 돌아간다(저장하지 않는다). `Room::RestoreClock`/`ExportClock`은 만들어 두었고 단위 시험도 있지만 `GameService`가 아직 부르지 않는다. 서버 옵션 `--bench-day-ticks`도 아직 없다(`PlayConfig::bench_day_ticks`는 시험에서만 쓴다). 현재 Unreal 클라이언트와 `game_load_client`는 117~119를 모르므로, 10분(기본 하루)이 넘게 접속해 있으면 `DayStarted`를 받는다.
+
+### 구현 중 정한 세부 사항
+
+- **고정 물체:** `src/play/landmark.h`(`Landmark`, `MakeLandmarks(config)`). 시작 집 너비나 높이가 0 이하이면 없다. `World::SetFixedObstacles`로 이동을 막고, `Room::Build`의 겹침 판정과 재생 자리(`Room::MakeSpotBlockers`, 공개 함수)에 들어간다. `bench_no_collision`이면 시작 집도 이동을 막지 않는다(측정 전용 설정의 뜻을 그대로 따름).
+- **노드 처음 배치도 시작 집을 피한다.** 설계는 재생 자리만 말했지만 처음 배치도 같은 규칙으로 했다. 기본값에서는 시작 집이 건설 구역 안이라 결과가 같고, 구역을 끈 설정에서만 차이가 난다.
+- **재생:** `ResourceField::Hit`은 재생을 예약하지 않는다(고갈된 노드의 `respawn_tick`은 `kNoRetry`). `RespawnAllDepleted(tick, blockers)`가 밤 정산의 재생이고, 자리를 못 찾은 노드만 `tick + respawn_retry_ticks`로 재시도를 예약한다. `Advance`는 그 재시도만 한다. 다음 밤 정산이 먼저 되살리면 남은 재시도 예약은 지운다.
+- **완공:** `StructureSet::Add`는 `ready_tick = 0`으로 만들고, `CompleteAll(tick)`이 밤 정산의 완공이다(`ready_tick = tick`). 복원은 저장된 `remaining_ticks`와 상관없이 건설 중이면 건설 중(`ready_tick = 0`). 저장하는 `remaining_ticks`는 항상 0이다.
+- **이동 입력:** `Room::ApplyInput`이 잠든 사람의 입력을 `InputResult::kSleeping`으로 통째로 버린다(입력 번호도 그대로). 통계는 `inputs_ignored`에 센다.
+- **강제 정산:** 깨어 있는 사람을 잠든 상태로 바꾼 뒤 3)에서 모두 깨운다. 밖에서 보이는 차이는 없다.
+- **`SleepUpdate` 조건:** 마지막으로 보낸 목록과 지금 목록이 다를 때만 보낸다(`Room::TakeSleepChange`). 그래서 같은 틱 안의 잠/깸 반복, 잠든 사람이 없던 강제 정산, 틱 사이에 잠들었다 바로 나간 경우에는 보내지 않는다. 정산 전에 잠든 사람이 있었으면 정산 틱에 빈 목록을 보낸다.
+- **농장의 밤 정산 저장:** 완공된 집이 없어도 정산마다 구조물을 대기열에 넣고 바로 저장한다(S0-3에서 시계가 같은 저장에 들어간다).
+- **통계:** 설계의 "틱 시간 분해의 새 항목"은 `틱시간{}` 묶음 안에 넣지 않고 별도 묶음으로 두었다. `results/stage4/analyze_*.py`가 `틱시간\{이동= 갱신= 구성= 전송= 합=\}` 모양을 정규식으로 그대로 읽기 때문이다. 줄 모양: `하루{정산=N 강제=N 정산시간=Nus 최대정산=Nus 잠=N 잠거부=N}`. 정산 시간은 `갱신`에서 빼고 따로 센다(합 = 이동 + 갱신 + 구성 + 전송 + 정산 + 기타). `잠`, `잠거부`는 설계에 없던 항목이고, 잠 요청 거부는 `requests_rejected`에 세지 않는다. `aggregate.py`의 정규식(`최대틱처리=…us[^}]*\}`)은 영향이 없다.
+
+### 고친 기존 시험과 이유
+
+규칙이 바뀐 시험은 같은 성질(정확히 그 순간에 바뀜, 그 전에는 안 바뀜, 방 사이 격리)을 밤 정산 기준으로 다시 시험한다. "그 전에는 안 바뀜"은 옛 시각(600틱, 100틱)이 지나도 바뀌지 않는 것으로 확인한다.
+
+| 파일 | 시험(옛 이름 → 새 이름) | 이유 |
+| --- | --- | --- |
+| play_resources_test | `RespawnsExactlyAfterTheConfiguredTicks` → `ADepletedNodeStaysDepletedThroughTheDayAndComesBackAtTheNight` | 재생이 밤 정산으로 |
+| play_resources_test | `RoomGatherTest.DepletedNodeRespawnsAfterExactlyTheConfiguredTicks` → `ADepletedNodeStaysDepletedAllDayAndReturnsAfterTheNight` | 같음 |
+| play_resources_test | `RespawnLeavesTheStructureSpot…`, `StaysDepletedWhileNoSpotIsFree…`, `ARetryThatFailsAgain…`, `RespawnedNodesNeverLandInsideTheBuildZone`, `RespawnIsReportedAsAChange` | 첫 재생 시도를 `Advance` 대신 `RespawnAllDepleted`(밤)로. 재시도 간격 시험은 그대로 |
+| play_structures_test | `NumbersFromOneStartsBuildingAndCompletesAtTheExactTick` → `NumbersFromOneStartBuildingAndAllCompleteAtTheNight` | 완공이 밤 정산으로 |
+| play_structures_test | `RoomBuildTest.TheBuildingCompletesAfterExactlyTheConfiguredTicks` → `TheBuildingStaysUnderConstructionAllDayAndCompletesAtTheNight` | 같음 |
+| play_structures_test | `ChangesAreCollectedOnce…`, `CompletionIsReportedAsAChange`, `BuildingSpendsTheExactCost…` | `CompleteAll`, `ready_tick` 0 |
+| play_structures_test | `StructuresMayTouchButNotOverlap`, `WhenTwoPlayersBuild…`, `TheInventoryIsLost…` | 좌표가 시작 집과 겹쳐 시작 집 밖으로 옮김 |
+| play_collision_test | `NoInputSequenceEverGetsInsideAnObstacle` | 집 두 채를 시작 집 밖으로 옮기고 겹침 검사에 시작 집을 포함 |
+| play_collision_test | `ARespawningNodeUnderThePlayerDoesNotTrapThem` | 밤 정산은 사람을 아침 위치로 먼저 옮기므로, 지금 위치 기준 재생 규칙을 `RespawnAllDepleted(tick, MakeSpotBlockers())`로 직접 시험 |
+| game_service_test | `DepletedNodeComesBackAfterExactlyTheRespawnTicks…` → `ADepletedNodeStaysDepletedUntilTheNightAndThenTheRoomIsTold` | 재생이 밤 정산으로(모두 잠들어 넘김) |
+| game_service_test | `ACatchUpTickStillDeliversEveryChangeAndRespawnsInOrder`, `ACatchUpTickStillDeliversTheCompletion` | 따라잡기 틱이 하루 끝을 넘어도 정산이 한 번인지로 |
+| game_service_test | `BuildingRepliesAtOnce…ThenOnCompletion`, `ALateJoinerReceivesTheCurrentStructures…` | 완공을 밤 정산(잠, 강제)으로. 둘째 집 좌표를 시작 집 밖으로 |
+| game_service_test | `TheServerStopsAPlayerAtABuiltWall…` 외 건설 좌표 (2400, 2800), (2500, 2800)을 쓰던 시험들 | 시작 집과 겹쳐 (2400, 2000) 등으로 옮김. 벽 시험은 남쪽으로 걷는다 |
+| game_integration_test | `BuildingOverTcp…Completes` → `…CompletesAtTheNight`, `ADepletedNodeRespawnsOnTheRealTimer…` → `…AtTheNightOnTheRealTimer` | 실제 타이머 시험은 `bench_day_ticks`(20, 10)로 짧은 하루 |
+| game_integration_test | `APlayerWalkingIntoABuiltHouse…`, `TheTickKeepsRunning…`, 건설 좌표 | 시작 집과 겹쳐 옮김 |
+| farm_integration_test | `CompletionIsSavedImmediately` → `CompletionAtTheNightIsSavedImmediately`, `BuildingIsSavedImmediately…`(남은 틱 0) | 완공이 밤 정산으로 |
+| farm_integration_test | `ConstructionProgressIsSavedAndTheClosedFarmDoesNotAdvanceTime` → `AHouseClosedUnderConstructionIsStillBuildingWhenReopenedAndCompletesAtTheNextNight` | 남은 틱 규칙이 없어졌다. "닫혀 있는 동안 시간이 흐르지 않는다"는 S0-3의 시계 저장 시험에서 다시 확인한다 |
+| account_mysql_test | `FarmServerConfig`(`build_ticks` → `bench_day_ticks` 10), 건설 좌표 | 같음. **실행하지 못했다(사용자가 실행)** |
+
+시험 설정 `FarmConfig`/`BuildServerConfig`/`GatherServerConfig`의 인자는 `bench_day_ticks`로 바뀌었고 기본값 0(시험 중에 밤이 오지 않음)이다. 밤이 오면 농장이 바로 저장되므로, 주기 저장을 확인하는 시험에 밤이 섞이지 않게 했다.
+
+### 검증 결과 (S0-1, S0-2)
+
+- `ctest` 전체(Debug): **이전 593개(통과 558, MySQL 35 건너뜀) → 이후 665개(통과 630, 건너뜀 35, 실패 0)**, 두 번 실행해 같았다. 새로 더한 것: `play_day_test` 28개(시계, 잠, 정산 조건, 정산 내용과 결정성, 재시도, 옛 데이터의 겹친 집), 시작 집 시험(충돌 5, 건설 4), `GameService`의 하루/잠 시험 15개, TCP 통합 4개(각각 `_io4` 반복 포함), 서버 전용 ID 117~119와 잘못된 `SleepRequest` 본문의 연결 종료.
+- 미리 확인한 변형 3가지(완료 기준 14의 일부, 정식 변형 검증은 S0-5): `DayStarted`를 스냅샷 뒤에 보냄, `SleepUpdate`를 매 틱 보냄, "모두 잠듦"을 "누구든 잠듦"으로. 모두 시험이 잡았다.
