@@ -4,12 +4,8 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 ## 현재 상태
 
-- 1단계(패킷 송수신)는 **Windows 기준으로 완료**했다. Linux 확인은 사용자가 보류했다. **2단계(채팅 + MySQL)는 Windows 기준 완료**: 인메모리 채팅과 MySQL 저장소 모두 구현했고, 실제 MySQL 대상 `chat_mysql_test` 13개가 통과했다. **3단계(측정) 진행 중**: 기준·확장 측정을 마쳤고(Active 4,000연결까지 합격, 서버 스레드 1개의 처리량 상한 관측 약 4.5만/s) 비교 실험 1(로그 레벨)도 완료(`debug`는 응답당 CPU 5~6배, 부하 측정은 `info`), 실험 2(Nagle)도 완료(끄는 이득 없음, 켬 유지)이고 다음은 실험 3(스레드 수)(docs/stage3.md, results/stage3/). 진행 상태는 [docs/stage2.md](docs/stage2.md). 빌드 환경(CMake + vcpkg)은 Windows에서 확인됐고, `src/hello_asio.cpp`는 툴체인 확인용이다.
-- 구현됨: 프레임 코덱, Ping 서버(`game_server`), 동기식 테스트 클라이언트(`ping_client`, `BlockingClient`), 채팅(입장/퇴장/전파/기록 조회, 인메모리 저장소), 대화형 `chat_client`. `ctest` 121개 중 110개 통과, MySQL 대상 11개는 비밀번호가 없는 환경에서는 건너뛰며 비밀번호를 주고 사용자가 `chat_mysql_test`를 실행해 13개 통과를 확인했다. 1단계 결과는 [docs/stage1.md](docs/stage1.md)에 정리됨. 보류: Linux 빌드 확인(VM), 확인 후 stage1.md 갱신.
-- **4단계(게임) 서버 최소 구현 완료(Windows)**: 방 만들기, 6자리 숫자 코드로 입장(최대 4명), 방장 변경, 빈 방 삭제, 서버 판정 이동(속도 360 cm/s, 처음에는 300이었고 이 값으로 부하를 쟀다. 맵 5,000 x 5,000 cm), 20Hz 방 전체 스냅샷. `ctest` 218개 통과(MySQL 11개 건너뜀. 채집 확장 뒤에는 251개). 값은 사용자가 정하지 않아 **임의 기본값**이며 `PlayConfig`에서 바꾼다. **부하 측정 완료: 방 500개(플레이어 2,000명)까지 합격, 600개부터 불합격**(results/stage4/game-load.md, Windows 루프백 한 대, 충돌과 속도 360 이전 서버. 이후 재측정은 450개까지 합격이었으나 확정 아님). Unreal 쪽 연동은 다음 작업이다. 설계와 검증은 [docs/stage4.md](docs/stage4.md), Unreal용 프로토콜과 기준 바이트는 [docs/unreal-client.md](docs/unreal-client.md).
-- **Unreal 연동 스파이크 성공**: `D:\UnrealProjects\YongClient`(이 저장소와 별개)에서 서버에 접속해 Ping 5건 왕복을 확인했다(docs/unreal-client.md). 5.4.4에서 먼저 확인하고 **UE 5.8.4(`D:\UE_5.8`)로 올려 다시 통과**했다(5.4 시점 프로젝트는 `YongClient_UE54_backup`). 5.8은 MSVC 14.44가 선호 버전이라 5.4 때의 우회가 필요 없고, 타깃은 `BuildSettingsVersion.Latest`를 쓴다. 이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치다. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. Unreal 프로젝트에는 접속 계층(`FGameNetworkConnection`)과 게임 메시지 계층(`FGameClient`)이 구현되어 실제 서버로 시험을 통과했다(docs/unreal-client.md). 그 프로젝트는 이 저장소와 별개인 로컬 git 저장소다(원격 없음). **게임 클라이언트 최소판 완료**: 서브시스템, 스냅샷 보간, 탑뷰 카메라, WASD 이동, 메뉴(방 만들기/코드 입장)와 HUD(UMG, 로직은 C++)를 만들었고, 에디터에서 창 2개(Play Standalone)로 서버에 접속해 한 방에 여러 명이 보이는 것을 사용자가 확인했다(docs/unreal-client.md "메뉴와 HUD"). 에셋은 Git LFS. **4단계 확장 1(자원 채집) 서버와 Unreal C++ 구현 완료(Windows, 에디터 쪽 에셋과 PIE 확인은 남음)**: 서버가 나무 30개/돌 20개 노드의 배치, 체력, 재생(30초)과 거리(200 cm)·쿨다운(0.5초) 판정을 소유하고, `E`로 쳐서 목재/석재를 얻는다. 서버 `ctest` 251개 통과(MySQL 11개 건너뜀), 변형 검증 서버 20가지를 모두 잡았다. 설계와 검증은 [docs/stage4-gather.md](docs/stage4-gather.md). **콘텐츠 조각 1(집 짓기와 이동 충돌) 서버와 Unreal C++ 구현 완료(Windows, 에디터 에셋과 PIE 확인, 부하 재측정은 남음)**: B로 건설 모드, 마우스 클릭으로 300x300 cm 집을 지음(목재 20, 석재 10, 5초 건설 중), 구조물과 살아 있는 나무/돌이 서버 판정 이동을 막음. `ctest` 324개(MySQL 11개 건너뜀) 모두 통과, 서버 변형 검증 30가지 중 29가지를 잡고 1가지는 동등 변형, Unreal 변형 검증 10가지를 모두 잡았다. **구역 분리**: 건물은 맵 중앙 정사각형(건설 구역, 사방 1,200 cm) 안에만, 자원 노드는 그 밖에만 놓이고 재생하며(`GAME_BUILD_OUT_OF_ZONE` 18), 재생 자리를 못 찾으면 1초마다 다시 찾는다(변형 검증 10가지를 모두 잡았다). **충돌 이후 부하 재측정에서는 450개까지 합격, 500개는 불합격이었으나 이것은 확정이 아니다**: 이후 실험에서 속도와 충돌은 CPU에 영향이 없었고, 같은 코드의 방당 CPU가 측정한 날의 PC 상태(배경 프로그램)에 따라 20% 넘게 달라졌으며, 이전 서버와의 같은 세션 비교는 배경 프로그램 때문에 무효가 되었다. 틱 시간의 약 98%는 전송(Deliver)이고 그 비용은 소켓 송신 시스템 호출이다(직렬화는 1% 미만, results/stage4/deliver-breakdown.md). 설계와 검증은 [docs/content-roadmap.md](docs/content-roadmap.md). PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싸야 한다(점에서 쪼개짐). **입출력 스레드 분리 구현과 측정 완료(개선 후보 A)**: 소켓 읽기/쓰기를 `--io-threads N`개 스레드가 나눠 맡고 게임 로직은 스레드 1개 그대로다. 같은 세션 비교에서 분리 이전은 방 500개 불합격(누락 4.8~7.8%)이었고 `--io-threads 2`는 600개, `4`는 700개까지 3회 합격했다(틱 스레드 전송 시간 92% 감소, 서버 전체 CPU 약 25% 증가, 일부 실행은 PC 부하가 섞였을 수 있음). `ctest` 427개 통과(MySQL 11개 건너뜀). 기본값은 0 유지(results/stage4/io-threads.md, docs/stage4.md).
-- **계정과 농장 저장(MySQL)은 진행 중이다(설계와 결과: [docs/persistence.md](docs/persistence.md)). P1(계정)과 P2(농장 저장)는 서버에 구현했고 인메모리 저장소로 시험했다(Windows)**: ID/비밀번호 가입과 로그인(비밀번호는 libsodium Argon2id 해시만 저장하고 해시 계산은 일꾼 스레드 `--hash-workers`), 내 기록 조회, 같은 계정의 중복 접속 거부, 연결당 로그인 실패 5회 제한, 게스트(로그인 없이 닉네임만)는 그대로 유지. **로그인한 사람의 방 만들기는 "내 농장 열기"**이고(계정당 농장 1개, 방 코드 고정), 집(건설 중이면 남은 틱까지)과 (농장, 계정)별 인벤토리와 계정별 누적 기록(채집량, 지은 집 수)이 MySQL에 저장된다. 저장은 쓰기 대기열(`FarmPersistence`)이 맡는다: 건설, 완공, 방을 나갈 때, 농장이 닫힐 때, 서버 종료 때는 바로, 채집은 10초마다 모아서, 저장이 실패해도 게임은 계속되고 다음 주기에 다시 저장한다(절대값 덮어쓰기라 멱등). 농장 방에는 로그인한 사람만, 임시 방에는 게스트만 들어간다. 메시지 ID 120~125(`proto/account.proto`), 결과 코드 19/20, 마이그레이션 `002`, `003`, `--storage mysql`이면 채팅, 계정, 농장이 모두 MySQL에 저장된다. 실제 MySQL 시험 `account_mysql_test`는 비밀번호를 환경변수로 주고 **사용자가** 실행해야 한다(만든 환경에서는 실행하지 못했다). **비밀번호가 평문으로 전송된다(TLS 없음).** **P3(Unreal 로그인 화면)은 C++와 커맨들릿 시험(5모드 111건, 기존 모드 회귀 통과, 변형 검증 21가지)과 위젯 에셋 추가(MCP)까지 끝났고, PIE 확인은 진행 중이다**(docs/unreal-client.md "계정과 로그인 (Unreal)"). PIE에서 "농장을 다시 열면 목재/석재가 0으로 보임"을 발견해 고쳤다(방 만들기/입장 응답에 인벤토리 `wood`, `stone` 추가). P4(저장 켬/끔 부하 측정)는 아직 안 했다.
-- **콘텐츠 조각 2(하루와 잠) 서버 S0의 1~5단계 완료(Windows)**: 방 시계(1일차 06:00, 하루 12,000틱 = 10분, `bench_day_ticks`), 시작 집(고정 물체 `Landmark`, (2500, 2850) 400x300, 이동을 막고 그 위에 지을 수 없음), 잠(시작 집이나 완공된 집 150 cm 안, 잠든 동안 이동 입력 무시, 채집/건설은 `GAME_SLEEPING` 22, 멀면 `GAME_SLEEP_TOO_FAR` 21), 모두 잠들거나 02:00이면 다음 틱에 밤 정산(완공 → 깨우고 아침 위치 → 고갈된 노드 전부 재생 → 날 넘김). **틱 기준 재생(600틱)과 완공(100틱)은 없앴다.** 메시지 116~119(`SleepRequest/Response`, `SleepUpdate`, `DayStarted`), `RoomState` 7~9(시계, 고정 물체, 잠든 사람). **농장 시계 저장**: 마이그레이션 `004`(`farm_clock`), 밤 정산과 농장이 닫힐 때와 서버 종료 때 바로 저장, 주기 저장에는 다른 변경이 있을 때만 함께 실음, 다시 열면 닫힌 날과 시각에서 이어짐(인메모리로 시험, 실제 MySQL 시험은 사용자가 실행). 도구: 서버 `--bench-day-ticks`, `game_client`의 `/sleep`, `/wake`, `/clock`, 부하 생성기는 밤 정산을 견디고 수를 출력. 변형 검증 37가지(35 잡음, 1 시험 보강 뒤 잡음, 1 동등 변형). 남은 일: 문서(S0-6), 밤 정산 비용 측정(완료 기준 12, 사용자가 `results/stage4/run-night-cost.ps1` 실행), Unreal S1~S3. 지금의 Unreal 클라이언트는 117~119를 모른다. 세부 사항과 고친 시험은 [docs/content-day.md](docs/content-day.md) 13절.
+- 요약: 1~4단계는 Windows 기준 완료(Linux 보류). 그 뒤 계정과 농장 저장(서버 완료, Unreal 로그인 PIE 확인 중, 저장 부하 측정 안 함)을 만들었고, 지금은 스타듀밸리 풍 콘텐츠 조각을 진행한다: 조각 2(하루와 잠) 서버 S0-1~S0-5 완료(문서 S0-6, 측정, Unreal 남음), 조각 2.5(맵 여러 개) 설계 완료.
+- **진행 상태, 남은 일, 사용자가 할 일, 보류, 지금의 시험 개수, 사용 중인 메시지 ID와 결과 코드는 [docs/status.md](docs/status.md)가 기준이다.** 상태가 바뀌면 status.md를 고치고 이 절에는 위 요약 한 줄만 고친다. 설계, 검증 결과, 겪은 문제는 각 단계 문서에 둔다.
 - 확인된 명령만 아래 "명령" 절에 있다. 없는 명령을 지어내지 말고, 구현하면서 이 절에 추가한다.
 - git 저장소다(`main` 브랜치). 커밋은 사용자가 요청할 때만 한다. 커밋 메시지는 **짧은 한국어 제목 한 줄**만 쓰고(예: `조각 2(하루와 잠) 설계 문서 추가`), `Co-Authored-By`, `Claude-Session` 같은 표시 줄은 붙이지 않는다. `build/`, `vcpkg_installed/`, `CMakeUserPresets.json`은 gitignore 대상이다.
 
@@ -17,6 +13,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 | 문서 | 역할 |
 | --- | --- |
+| [docs/status.md](docs/status.md) | **진행 상태의 기준**: 영역별 상태, 지금의 숫자(시험 개수, 사용 중인 메시지 ID/결과 코드/필드/마이그레이션), 진행 중인 일, 사용자가 할 일, 보류, 후속 후보, 열린 결정, 다음 순서 |
 | [project.md](project.md) | 목표, 기술 선택, 1~4단계 로드맵과 완료 기준, 단계별 제외 범위 |
 | [docs/protocol.md](docs/protocol.md) | 1단계 TCP 프레임 형식, Protobuf 메시지, 오류 처리 계약 |
 | [docs/validation.md](docs/validation.md) | 기능 검증, 수용 인원 정의, 측정 절차, 실험 기록 템플릿 |
@@ -25,15 +22,16 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 | [docs/stage2.md](docs/stage2.md) | 2단계 결정 기록, 작업 순서와 진행 상태, MySQL 준비 방법 |
 | [docs/stage3.md](docs/stage3.md) | 3단계 측정 계획과 합격 기준(측정 전 확정), 진행 상태, 측정 도구에서 겪은 문제 |
 | [docs/game-plan.md](docs/game-plan.md) | 게임 기획(스타듀밸리 풍 1~4인 협동 농장): 하루 루프와 밤 정산, 농사, 출하/상점, 제작/도구 강화, 기본값, 넣지 않는 것, 열린 결정 |
-| [docs/stage4.md](docs/stage4.md) | 4단계 게임 서버: 범위, 프로토콜(ID 100~111), 기본값, 완료 기준, 검증 결과, 겪은 문제, 제한 |
-| [docs/stage4-gather.md](docs/stage4-gather.md) | 4단계 확장 1(자원 채집) 설계: 범위, 프로토콜(ID 107/108/112), 기본값, 완료 기준, 서버·Unreal 설계, MCP 작업 목록 (구현 전) |
-| [docs/content-roadmap.md](docs/content-roadmap.md) | 채집 이후 콘텐츠 로드맵(집 짓기 → 하루 → 농사 → 경제 → 저장)과 첫 조각(집 짓기, 이동 충돌 포함) 설계. 구현 전 계획 |
+| [docs/stage4.md](docs/stage4.md) | 4단계 게임 서버: 범위, 게임 프로토콜 표, 기본값, 완료 기준, 검증 결과, 부하 측정, 겪은 문제, 제한 |
+| [docs/stage4-gather.md](docs/stage4-gather.md) | 4단계 확장 1(자원 채집) 설계와 검증 결과: 범위, 프로토콜(ID 107/108/112), 기본값, 완료 기준, 서버·Unreal 설계, MCP 작업 목록. 구현됨(재생 규칙은 조각 2에서 밤 정산으로 바뀜) |
+| [docs/content-roadmap.md](docs/content-roadmap.md) | 콘텐츠 조각 순서(1 집 짓기 → 2 하루와 잠 → 2.5 맵 여러 개 → 3 농사 → 4 경제 → 5 제작 → 6 다듬기), 조각 1(집 짓기, 이동 충돌, 구역 분리)의 설계와 검증 결과 |
 | [docs/content-day.md](docs/content-day.md) | 콘텐츠 조각 2(하루와 잠) 설계: 시계, 잠, 밤 정산 순서, 시작 집, 프로토콜(ID 116~119, 결과 코드 21~22), 시계 저장(마이그레이션 004), 완료 기준과 밤 정산 비용 측정 계획. 서버 S0 1·2단계 구현됨(13절) |
 | [docs/content-maps.md](docs/content-maps.md) | 콘텐츠 조각 2.5(맵 여러 개) 설계: 농장/숲/채석장, 출입구와 맵 이동, 방 틱 하나, 맵별 알림, 프로토콜(ID 126, 새 필드, 기존 결과 코드의 뜻 확장), 완료 기준과 부하 측정 계획. 구현 전(조각 2 다음) |
 | [docs/unreal-client.md](docs/unreal-client.md) | Unreal 연동 스파이크(5.4.4와 5.8.4에서 Ping 성공), 프로토콜 기준 바이트, Protobuf 연동 방법, 겪은 문제, 확인 방법 |
-| [docs/persistence.md](docs/persistence.md) | 계정(ID/비밀번호)과 농장 저장(MySQL) 설계: 결정, 기본값, 스키마, 저장 규칙, 프로토콜(ID 120~), 검증과 성능 측정 계획, 작업 순서. 구현 전 |
+| [docs/persistence.md](docs/persistence.md) | 계정(ID/비밀번호)과 농장 저장(MySQL) 설계: 결정, 기본값, 스키마, 저장 규칙, 프로토콜(ID 120~125), 검증과 성능 측정 계획, 작업 순서, P1·P2 구현 결과. P3 진행 중, P4 안 함 |
 | [docs/server-journey.md](docs/server-journey.md) | 서버 시행착오 기록(포트폴리오용): 측정 도구 포화, 결론 철회 두 번, 병목 분해, 입출력 스레드 분리, 버그와 시험의 허점 |
 | [docs/unreal-client-structure.md](docs/unreal-client-structure.md) | Unreal 클라이언트 계층 구조, C++와 MCP의 책임 분담과 작업 순서, 검증 방법 (포트폴리오용 정리) |
+| [docs/portfolio-handoff.md](docs/portfolio-handoff.md) | 포트폴리오(PPT)를 만드는 세션에 넘기는 요약: 스토리라인, 수치와 출처, 그림 재료, 말하면 안 되는 주장 |
 | [README.md](README.md) | 진입점(포트폴리오용). 결과 한눈에 보기, 구조, 단계 요약, 문서 지도, 빠른 시작, 한계 |
 
 `project.md`는 CLAUDE.md와 역할이 다르다(사람이 읽는 로드맵이며 README가 링크한다). 이름을 바꾸거나 합치지 않는다. 계획·계약이 바뀌면 CLAUDE.md가 아니라 해당 문서를 고치고, 여기에는 요약만 둔다.
@@ -59,7 +57,7 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 ## 개발 원칙
 
-- **작은 완성 단위:** 단계의 완료 기준을 만족한 뒤 다음 기능으로 간다. 단계 밖 기능(로그인, 채팅, MySQL, 암호화, 게임 로직, ObjectPool, 분산 서버)을 미리 구현하지 않는다.
+- **작은 완성 단위:** 단계(조각)의 완료 기준을 만족한 뒤 다음 기능으로 간다. 지금 단계 밖의 기능을 미리 구현하지 않는다. 범위는 그 단계 설계 문서의 "포함/제외"가 기준이다(1단계 때는 로그인, 채팅, MySQL, 암호화, 게임 로직, ObjectPool, 분산 서버가 범위 밖이었다. 지금도 ObjectPool, 분산 서버, TLS는 범위 밖이다).
 - **프로토콜 먼저, 실패도 설계:** TCP는 메시지 경계가 없다. 분할 수신, 합쳐진 프레임, 비정상 길이, 연결 중단에서도 서버 프로세스는 살아 있어야 한다.
 - **로그와 관측:** 연결/해제, 요청 ID, 처리 결과, 오류 유형을 남긴다. 본문 전체는 기본 로그에 남기지 않는다. 연결 수, 송수신 프레임 수, 오류 수, 송신 큐 크기를 볼 수 있게 한다.
 - **측정 없이 주장하지 않는다:** 성능 목표 수치, 최대 접속자 수, "N% 향상"을 측정 전에 적지 않는다. 최적화(MemoryPool, 배치 송신, 스레드 수 등)는 병목 증거가 있을 때만, **한 번에 한 변수씩** 비교한다. 비슷하면 단순한 방식을 유지한다.
@@ -69,8 +67,12 @@ Cross-Platform Game Server Lab: Boost.Asio 기반 C++ 게임 서버를 단계별
 
 1. 패킷 송수신 (Ping 왕복, 프레이밍, 오류 처리) ← Windows 기준 완료, Linux 확인 보류
 2. 채팅 + MySQL (방 단위 전파, 기록 저장·조회, DB 장애 시 동작) ← Windows 기준 완료
-3. 수용 규모와 병목 검증 (Idle/Active 워크로드 구분, p50/p95/p99, Windows·Linux 각각 측정) ← 진행 중 (기준 측정 완료)
-4. 게임 (서버가 상태와 판정을 소유. 사용자가 정한 기획은 1~4인 협동 농장 게임, 방 코드 입장, Unreal 클라이언트: docs/game-plan.md) ← 서버 최소 구현 완료(Windows), Unreal 연동은 다음 (docs/stage4.md)
+3. 수용 규모와 병목 검증 (Idle/Active 워크로드 구분, p50/p95/p99, Windows·Linux 각각 측정) ← Windows 기준 완료(실험 3은 4단계 입출력 분리가 대신함), Linux 보류
+4. 게임 (서버가 상태와 판정을 소유. 1~4인 협동 농장, 방 코드 입장, Unreal 클라이언트) ← 서버 최소 구현, 채집, 집 짓기, 부하 측정과 입출력 분리, Unreal 최소판 완료(Windows)
+5. 계정과 농장 저장 (ID/비밀번호, MySQL 영속화: docs/persistence.md) ← 서버 완료, Unreal 로그인 PIE 확인 중, 저장 부하 측정 안 함
+6. 스타듀밸리 풍 콘텐츠 조각 (하루와 잠 → 맵 여러 개 → 농사 → 경제 → 제작: docs/game-plan.md, docs/content-roadmap.md) ← 조각 2 진행 중
+
+진행 상태의 세부는 [docs/status.md](docs/status.md)가 기준이다.
 
 ## 검증·기록 규칙
 
@@ -99,6 +101,12 @@ cmake --preset windows-local          # 첫 실행은 Boost/Protobuf 소스 빌�
 cmake --build --preset local-debug    # 또는 local-release
 build/windows-local/Debug/hello_asio.exe
 ```
+
+### 환경 주의 (Windows PC, 확인됨)
+
+- PowerShell에서 `-key=1.2.3.4` 같은 인자는 따옴표로 감싼다(점에서 쪼개진다). `-RoomsA 300,450` 같은 쉼표 목록은 PowerShell이 하나의 숫자로 읽을 수 있다.
+- Unreal 클라이언트는 이 저장소와 별개인 로컬 git 저장소 `D:\UnrealProjects\YongClient`(원격 없음, 에셋은 Git LFS)다. 엔진은 UE 5.8.4(`D:\UE_5.8`), 타깃은 `BuildSettingsVersion.Latest`, MSVC는 14.44를 쓴다(이 PC의 MSVC 14.38은 x64 lib가 없는 불완전 설치다). 5.4 시점 프로젝트는 `YongClient_UE54_backup`. Unreal 쪽 Protobuf는 서버와 같은 6.33.4를 복사해 쓴다. 상세는 docs/unreal-client.md.
+- 측정은 Release 빌드로, 다른 무거운 작업을 하지 않는 상태에서 한다. 같은 코드의 방당 CPU가 측정일의 PC 상태(배경 프로그램)에 따라 20% 넘게 달라진 적이 있으므로, 비교는 같은 세션에서 번갈아 재고 실행 전 PC 상태를 기록한다.
 
 ### 테스트 (GoogleTest, Windows 확인됨)
 
@@ -234,8 +242,8 @@ build/windows-local/Debug/game_server.exe --port 7777
 - `src/play/play_config.h`: 게임 규칙 기본값(맵, 속도, 인원, 틱, 방 수 상한). 한 곳에서만 바꾼다
 - `src/play/world.h/.cpp`: 한 방의 위치와 이동 계산(순수 계산, 서버 판정). 방향 길이는 `double` `hypot`으로 구해 1로 제한한다(`play_core` 라이브러리)
 - `src/play/room.h/.cpp`: 방 한 개의 인원, 방장, 닉네임, 시작 칸(slot). 소켓과 시간을 모른다
-- `src/play/resources.h/.cpp`: 한 방의 자원 노드(고정 시드 배치, 체력, 고갈, 밤 정산의 재생과 낮의 재생 재시도, 바뀐 노드 모으기). 소켓과 시계를 모르는 순수 계산이고 시간은 틱 번호로만 안다. `Room::Gather`가 거리·쿨다운·인벤토리를 합쳐 판정하고, 판정 순서는 방에 없음 → 노드 없음 → 고갈 → 너무 멂 → 쿨다운이다. 규칙은 docs/stage4-gather.md
-- `src/play/structures.h/.cpp`, `src/play/geometry.h`: 한 방의 구조물(건설 중 → 밤 정산의 완공, 바뀐 구조물 모으기)과 겹침 판정 함수(닿기만 하는 것은 겹침이 아니다, double 계산). `Room::Build`가 거리·겹침(구조물, 살아 있는 노드, **모든 플레이어**)·비용을 판정하며 순서는 방에 없음 → 종류 → 상한 → 너무 멂 → 겹침/맵 밖 → 자원 부족이다. `World`는 구조물과 노드를 읽기 전용 포인터로 받아(`AttachObstacles`, 그래서 `Room`은 복사/이동 금지) 이동을 축별로 나눠 막고 벽을 따라 미끄러지게 한다. 규칙은 docs/content-roadmap.md
+- `src/play/resources.h/.cpp`: 한 방의 자원 노드(고정 시드 배치, 체력, 고갈, 밤 정산의 재생과 낮의 재생 재시도, 바뀐 노드 모으기). 소켓과 시계를 모르는 순수 계산이고 시간은 틱 번호로만 안다. `Room::Gather`가 거리·쿨다운·인벤토리를 합쳐 판정하고, 판정 순서는 방에 없음 → 잠듦 → 노드 없음 → 고갈 → 너무 멂 → 쿨다운이다. 규칙은 docs/stage4-gather.md, 재생 시점은 docs/content-day.md
+- `src/play/structures.h/.cpp`, `src/play/geometry.h`: 한 방의 구조물(건설 중 → 밤 정산의 완공, 바뀐 구조물 모으기)과 겹침 판정 함수(닿기만 하는 것은 겹침이 아니다, double 계산). `Room::Build`가 거리·겹침(구조물, 살아 있는 노드, **모든 플레이어**)·비용을 판정하며 순서는 방에 없음 → 잠듦 → 종류 → 상한 → 너무 멂 → 건설 구역 밖 → 겹침/맵 밖(시작 집 포함) → 자원 부족이다. `World`는 구조물과 노드를 읽기 전용 포인터로 받아(`AttachObstacles`, 그래서 `Room`은 복사/이동 금지) 이동을 축별로 나눠 막고 벽을 따라 미끄러지게 한다. 규칙은 docs/content-roadmap.md
 - `src/play/game_service.h/.cpp`: 여러 방 관리, 6자리 숫자 코드 발급(충돌 재발급, 생성기 교체 가능), 입장/퇴장/방장 변경/알림, 고정 간격 틱(밀리면 최대 3틱 따라잡고 나머지는 건너뜀). 전송 중 연결이 닫혀도 안전하도록 틱은 "계산 -> 수신자 확보 -> 전송" 순서다. 연결은 기존 `chat::ChatClient` 인터페이스를 그대로 쓴다
 - `src/client/game_client.cpp`: 대화형 게임 클라이언트(수동 실험용)
 - `src/tools/game_load_client.cpp`: 4단계 게임 부하 생성기(방 R개 x 4명, 열린 루프 입력, 스냅샷 도착 간격/입력 반영 지연/누락/정합성 검사, 생성기 포화 감지)
@@ -254,6 +262,3 @@ build/windows-local/Debug/game_server.exe --port 7777
 
 `linux-debug`, `linux-release` 프리셋(Ninja)이 정의돼 있으나 아직 실행해 보지 않았다. 확인하면 이 절을 갱신한다.
 
-### 추가 예정
-
-부하 클라이언트 실행 명령은 3단계에서 구현한 뒤 채운다.

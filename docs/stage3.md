@@ -1,6 +1,6 @@
 # 3단계: 수용 규모와 병목 검증 (진행 기록)
 
-> 상태: **기준 측정과 확장 측정 완료.** 기준 측정은 Active 2,000연결까지 합격이었고 그 이상은 생성기 포화로 판정하지 못했다. 생성기를 다중 스레드로 바꿔 다시 재니 **Active 4,000연결(초당 4만 건)까지 3회 모두 합격, 5,000부터 불합격이 섞이고 7,500 이상은 서버 스레드 1개가 포화**됐다. 비교 실험 1(로그 레벨)과 2(Nagle)도 끝났고, 다음은 실험 3(스레드 수)이다. 결과는 [baseline.md](../results/stage3/baseline.md), [scaled.md](../results/stage3/scaled.md), [exp1-loglevel.md](../results/stage3/exp1-loglevel.md), [exp2-nodelay.md](../results/stage3/exp2-nodelay.md). 이 문서의 합격 기준은 측정 **전에** 확정했고 결과를 본 뒤에는 바꾸지 않는다. 바꿔야 한다면 바꾸는 이유와 함께 이 문서에 따로 기록한다.
+> 상태: **기준 측정과 확장 측정 완료.** 기준 측정은 Active 2,000연결까지 합격이었고 그 이상은 생성기 포화로 판정하지 못했다. 생성기를 다중 스레드로 바꿔 다시 재니 **Active 4,000연결(초당 4만 건)까지 3회 모두 합격, 5,000부터 불합격이 섞이고 7,500 이상은 서버 스레드 1개가 포화**됐다. 비교 실험 1(로그 레벨)과 2(Nagle)도 끝났다. 실험 3(스레드 수)은 계획대로 하지 않았고, 같은 방향의 개선(소켓 입출력 스레드 분리)을 4단계 게임 워크로드에서 했다([stage4.md](stage4.md), results/stage4/io-threads.md). 결과는 [baseline.md](../results/stage3/baseline.md), [scaled.md](../results/stage3/scaled.md), [exp1-loglevel.md](../results/stage3/exp1-loglevel.md), [exp2-nodelay.md](../results/stage3/exp2-nodelay.md). 이 문서의 합격 기준은 측정 **전에** 확정했고 결과를 본 뒤에는 바꾸지 않는다. 바꿔야 한다면 바꾸는 이유와 함께 이 문서에 따로 기록한다.
 
 ## 질문
 
@@ -95,8 +95,8 @@
 | 부하 생성기 강화 (Active 5,000 이상 측정용) | **완료** (`--threads`). 확장 측정 21회, [결과 기록](../results/stage3/scaled.md) |
 | 실험 1 (로그 레벨) | **완료** (42회). [결과 기록](../results/stage3/exp1-loglevel.md): `debug`는 응답 1건당 CPU가 약 5~6배, 초당 1만 건에서 처리 불가 |
 | 실험 2 (`TCP_NODELAY`) | **완료** (24회). [결과 기록](../results/stage3/exp2-nodelay.md): 끄는 것의 이득 없음, 기준(켬) 유지 |
-| 실험 3 (strand, 다중 스레드) | 대기 |
-| 결과 기록 (`results/`) | 대기 |
+| 실험 3 (strand, 다중 스레드) | **하지 않음.** 같은 방향의 개선을 4단계에서 했다: 소켓 입출력만 strand로 스레드 N개에 나누는 구조(`--io-threads`), 게임 워크로드로 측정([stage4.md](stage4.md), results/stage4/io-threads.md). Ping 워크로드로 다시 재려면 새 계획을 쓴다 |
+| 결과 기록 (`results/`) | **완료** (results/stage3/: baseline, scaled, exp1-loglevel, exp2-nodelay) |
 
 ## 측정 도구에서 겪은 문제
 
